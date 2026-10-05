@@ -10,9 +10,9 @@ from typing import Annotated
 from fastapi import APIRouter, Cookie
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from twake_space_token_broker.delegations import Delegations
 from twake_space_token_broker.keys import Signer
 from twake_space_token_broker.lemonldap import LemonLDAP
+from twake_space_token_broker.tokens import AccessTokens
 
 COOKIE = "twake_space_consent"
 COOKIE_LIFETIME = 600
@@ -56,7 +56,7 @@ def _refused(reason: str) -> HTMLResponse:
 
 
 def router(
-    lemonldap: LemonLDAP, signer: Signer, delegations: Delegations, clock: Callable[[], float]
+    lemonldap: LemonLDAP, signer: Signer, tokens: AccessTokens, clock: Callable[[], float]
 ) -> APIRouter:
     routes = APIRouter()
 
@@ -92,8 +92,7 @@ def router(
         if not secrets.compare_digest(str(flow.get("state", "")).encode(), state.encode()):
             return _refused("Cette page ne correspond pas à l'autorisation en cours.")
         signed_in = await lemonldap.redeem(code, flow["verifier"])
-        assert signed_in.tokens.refresh_token is not None
-        await delegations.save(signed_in.user, signed_in.tokens.refresh_token)
+        await tokens.consented(signed_in)
         response = _page(
             "Votre assistant est autorisé",
             f"Votre assistant Twake Space peut désormais agir pour {escape(signed_in.user)}."

@@ -1,10 +1,9 @@
 """Access tokens for the users who consented, which APISIX hands to the contracts."""
 
 from collections.abc import Callable
-from dataclasses import dataclass
 
 from twake_space_token_broker.delegations import Delegations
-from twake_space_token_broker.lemonldap import GrantRefused, LemonLDAP
+from twake_space_token_broker.lemonldap import GrantRefused, LemonLDAP, SignedIn, Tokens
 
 REFRESH_MARGIN = 300
 """Seconds before its expiry when an access token is no longer handed out, but refreshed."""
@@ -18,12 +17,6 @@ class DelegationExpired(Exception):
     """The user consented, but LemonLDAP no longer honours their consent."""
 
 
-@dataclass(frozen=True)
-class _Cached:
-    access_token: str
-    expires_at: float
-
-
 class AccessTokens:
     def __init__(
         self, delegations: Delegations, lemonldap: LemonLDAP, clock: Callable[[], float]
@@ -31,7 +24,13 @@ class AccessTokens:
         self._delegations = delegations
         self._lemonldap = lemonldap
         self._clock = clock
-        self._cache: dict[str, _Cached] = {}
+        self._cache: dict[str, Tokens] = {}
+
+    async def consented(self, signed_in: SignedIn) -> None:
+        """Keeps the user's new delegation in place of any earlier one, with its access token."""
+        assert signed_in.tokens.refresh_token is not None
+        await self._delegations.save(signed_in.user, signed_in.tokens.refresh_token)
+        self._cache[signed_in.user] = signed_in.tokens
 
     async def of(self, user: str) -> str:
         """A fresh access token of the user, for the user's agent."""
@@ -41,10 +40,9 @@ class AccessTokens:
         refresh_token = await self._delegations.refresh_token_of(user)
         if refresh_token is None:
             raise DelegationMissing()
-        requested_at = self._clock()
         try:
             tokens = await self._lemonldap.refresh(refresh_token)
         except GrantRefused as refused:
             raise DelegationExpired() from refused
-        self._cache[user] = _Cached(tokens.access_token, requested_at + tokens.expires_in)
+        self._cache[user] = tokens
         return tokens.access_token

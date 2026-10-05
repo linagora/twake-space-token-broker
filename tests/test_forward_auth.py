@@ -50,9 +50,10 @@ async def test_an_access_token_is_refreshed_five_minutes_before_it_expires(
 
 
 async def test_an_expired_delegation_is_refused_with_the_consent_link(
-    client: AsyncClient, lemonldap: FakeLemonLDAP
+    client: AsyncClient, lemonldap: FakeLemonLDAP, clock: FakeClock
 ) -> None:
     await consent(client, lemonldap, MMAUDET)
+    clock.advance(30 * 24 * 3600)
     lemonldap.end_offline_session(MMAUDET)
 
     response = await client.get("/forward-auth", headers=as_agent_of(MMAUDET))
@@ -105,3 +106,19 @@ async def test_a_request_that_names_no_owner_is_invalid(
         "detail": "The X-Twake-User-Email header must name the agent's owner.",
         "code": "missing_user_email",
     }
+
+
+async def test_consenting_again_replaces_the_delegation(
+    client: AsyncClient, lemonldap: FakeLemonLDAP
+) -> None:
+    await consent(client, lemonldap, MMAUDET)
+    before = await client.get("/forward-auth", headers=as_agent_of(MMAUDET))
+    lemonldap.end_offline_session(MMAUDET)
+
+    await consent(client, lemonldap, MMAUDET)
+
+    after = await client.get("/forward-auth", headers=as_agent_of(MMAUDET))
+    assert after.status_code == 200
+    renewed = bearer(after.headers["authorization"])
+    assert renewed != bearer(before.headers["authorization"])
+    assert lemonldap.owner_of(renewed) == MMAUDET

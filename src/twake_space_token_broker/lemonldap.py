@@ -2,6 +2,7 @@
 
 import base64
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode
@@ -20,8 +21,8 @@ class GrantRefused(Exception):
 @dataclass(frozen=True)
 class Tokens:
     access_token: str
-    expires_in: int
-    """Seconds the access token lasts from when LemonLDAP issued it."""
+    expires_at: float
+    """When the access token expires, in seconds since the epoch."""
     refresh_token: str | None
 
 
@@ -45,18 +46,21 @@ def _subject(id_token: str) -> str:
     return str(claims["sub"])
 
 
-def _tokens(body: dict[str, Any]) -> Tokens:
+def _tokens(body: dict[str, Any], requested_at: float) -> Tokens:
     return Tokens(
         access_token=body["access_token"],
-        expires_in=int(body["expires_in"]),
+        expires_at=requested_at + int(body["expires_in"]),
         refresh_token=body.get("refresh_token"),
     )
 
 
 class LemonLDAP:
-    def __init__(self, settings: Settings, http: httpx.AsyncClient) -> None:
+    def __init__(
+        self, settings: Settings, http: httpx.AsyncClient, clock: Callable[[], float]
+    ) -> None:
         self._settings = settings
         self._http = http
+        self._clock = clock
 
     def _endpoint(self, path: str) -> str:
         return f"{self._settings.issuer.rstrip('/')}/oauth2/{path}"
@@ -78,7 +82,7 @@ class LemonLDAP:
 
     async def redeem(self, code: str, verifier: str) -> SignedIn:
         """Exchanges the code LemonLDAP sent the user back with for their tokens."""
-        body = await self._token(
+        tokens, body = await self._token(
             {
                 "grant_type": "authorization_code",
                 "code": code,
@@ -86,15 +90,17 @@ class LemonLDAP:
                 "code_verifier": verifier,
             }
         )
-        return SignedIn(user=_subject(body["id_token"]), tokens=_tokens(body))
+        return SignedIn(user=_subject(body["id_token"]), tokens=tokens)
 
     async def refresh(self, refresh_token: str) -> Tokens:
         """A new access token for the user the refresh token was issued to."""
-        return _tokens(
-            await self._token({"grant_type": "refresh_token", "refresh_token": refresh_token})
+        tokens, _ = await self._token(
+            {"grant_type": "refresh_token", "refresh_token": refresh_token}
         )
+        return tokens
 
-    async def _token(self, form: dict[str, str]) -> dict[str, Any]:
+    async def _token(self, form: dict[str, str]) -> tuple[Tokens, dict[str, Any]]:
+        requested_at = self._clock()
         response = await self._http.post(
             self._endpoint("token"),
             data=form,
@@ -103,4 +109,4 @@ class LemonLDAP:
         body: dict[str, Any] = response.json()
         if response.status_code == 400 and body.get("error") == "invalid_grant":
             raise GrantRefused()
-        return body
+        return _tokens(body, requested_at), body

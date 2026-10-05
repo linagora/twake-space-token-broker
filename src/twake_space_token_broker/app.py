@@ -23,7 +23,8 @@ def create_app(
     pool = AsyncConnectionPool(settings.database_url, open=False)
     http = httpx.AsyncClient(transport=lemonldap_transport, timeout=10.0)
     delegations = Delegations(pool, Cipher(settings.encryption_key))
-    lemonldap = LemonLDAP(settings, http)
+    lemonldap = LemonLDAP(settings, http, clock)
+    tokens = AccessTokens(delegations, lemonldap, clock)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -37,10 +38,6 @@ def create_app(
         title="Twake Space token broker", docs_url=None, redoc_url=None, lifespan=lifespan
     )
     problems.install(app)
-    app.include_router(
-        consent.router(lemonldap, Signer(settings.encryption_key), delegations, clock)
-    )
-    app.include_router(
-        forward_auth.router(AccessTokens(delegations, lemonldap, clock), settings.consent_url)
-    )
+    app.include_router(consent.router(lemonldap, Signer(settings.encryption_key), tokens, clock))
+    app.include_router(forward_auth.router(tokens, settings.consent_url))
     return app

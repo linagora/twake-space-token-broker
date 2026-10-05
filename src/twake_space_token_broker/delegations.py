@@ -25,7 +25,9 @@ class Delegations:
     async def save(self, user: str, refresh_token: str) -> None:
         async with self._pool.connection() as connection:
             await connection.execute(
-                "INSERT INTO delegations (user_email, refresh_token) VALUES (%s, %s)",
+                "INSERT INTO delegations (user_email, refresh_token) VALUES (%s, %s)"
+                " ON CONFLICT (user_email) DO UPDATE"
+                " SET refresh_token = EXCLUDED.refresh_token, updated_at = now()",
                 (user, self._cipher.encrypt(refresh_token, user=user)),
             )
 
