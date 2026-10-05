@@ -1,3 +1,4 @@
+import pytest
 from httpx import AsyncClient
 
 from tests.conftest import ALICE, MMAUDET, PUBLIC_BASE_URL, FakeClock, as_agent_of, consent
@@ -86,4 +87,21 @@ async def test_an_owner_who_never_consented_is_refused_with_the_consent_link(
         " link.",
         "code": "delegation_missing",
         "consent_url": f"{PUBLIC_BASE_URL}/consent",
+    }
+
+
+@pytest.mark.parametrize("headers", [{}, {"X-Twake-User-Email": ""}], ids=["missing", "empty"])
+async def test_a_request_that_names_no_owner_is_invalid(
+    client: AsyncClient, headers: dict[str, str]
+) -> None:
+    response = await client.get("/forward-auth", headers=headers)
+
+    assert response.status_code == 400
+    assert response.headers["content-type"] == "application/problem+json"
+    assert response.json() == {
+        "type": "urn:twake:problem:missing_user_email",
+        "title": "Missing user email",
+        "status": 400,
+        "detail": "The X-Twake-User-Email header must name the agent's owner.",
+        "code": "missing_user_email",
     }
