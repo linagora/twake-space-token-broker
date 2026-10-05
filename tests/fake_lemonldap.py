@@ -39,6 +39,8 @@ class FakeLemonLDAP:
         self._codes: dict[str, _Code] = {}
         self._refresh_tokens: dict[str, str] = {}
         self._access_tokens: dict[str, str] = {}
+        self.rotates_refresh_tokens = False
+        """Twake's LemonLDAP does not rotate them, but another configuration could."""
         self.transport = httpx.MockTransport(self._token_endpoint)
 
     def sign_in(self, authorize_url: str, user: str) -> str:
@@ -99,11 +101,15 @@ class FakeLemonLDAP:
         )
 
     def _refresh(self, form: dict[str, str]) -> httpx.Response:
-        """A new access token, and no new refresh token: Twake's LemonLDAP does not rotate them."""
         user = self._refresh_tokens.get(form.get("refresh_token", ""))
         if user is None:
             return _error(400, "invalid_grant")
-        return httpx.Response(200, json=self._access(user))
+        if not self.rotates_refresh_tokens:
+            return httpx.Response(200, json=self._access(user))
+        del self._refresh_tokens[form["refresh_token"]]
+        rotated = f"refresh-{next(self._serial)}"
+        self._refresh_tokens[rotated] = user
+        return httpx.Response(200, json={**self._access(user), "refresh_token": rotated})
 
     def _access(self, user: str) -> dict[str, str | int]:
         access_token = f"access-{next(self._serial)}"

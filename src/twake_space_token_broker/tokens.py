@@ -44,5 +44,7 @@ class AccessTokens:
             tokens = await self._lemonldap.refresh(refresh_token)
         except GrantRefused as refused:
             raise DelegationExpired() from refused
+        if tokens.refresh_token is not None and tokens.refresh_token != refresh_token:
+            await self._delegations.save(user, tokens.refresh_token)
         self._cache[user] = tokens
         return tokens.access_token

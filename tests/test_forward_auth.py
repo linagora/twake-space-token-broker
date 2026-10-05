@@ -122,3 +122,18 @@ async def test_consenting_again_replaces_the_delegation(
     renewed = bearer(after.headers["authorization"])
     assert renewed != bearer(before.headers["authorization"])
     assert lemonldap.owner_of(renewed) == MMAUDET
+
+
+async def test_a_refresh_token_lemonldap_rotates_serves_the_next_refresh(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, clock: FakeClock
+) -> None:
+    lemonldap.rotates_refresh_tokens = True
+    await consent(client, lemonldap, MMAUDET)
+    clock.advance(ACCESS_TOKEN_LIFETIME)
+    await client.get("/forward-auth", headers=as_agent_of(MMAUDET))
+
+    clock.advance(ACCESS_TOKEN_LIFETIME)
+    response = await client.get("/forward-auth", headers=as_agent_of(MMAUDET))
+
+    assert response.status_code == 200
+    assert lemonldap.owner_of(bearer(response.headers["authorization"])) == MMAUDET
