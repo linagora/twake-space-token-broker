@@ -25,7 +25,9 @@ COOKIE_LIFETIME = 600
 """Seconds a user has to sign in once the consent has started."""
 
 
-def _page(title: str, message: str, *, status_code: int = 200) -> HTMLResponse:
+def _page(title: str, message: str, *, retry: bool = False, status_code: int = 200) -> HTMLResponse:
+    """A short page in French. Its title and message are text, which the page escapes."""
+    link = '\n<p><a href="/consent">Recommencer</a></p>' if retry else ""
     return HTMLResponse(
         f"""<!doctype html>
 <html lang="fr">
@@ -37,7 +39,7 @@ def _page(title: str, message: str, *, status_code: int = 200) -> HTMLResponse:
 <body>
 <main>
 <h1>{escape(title)}</h1>
-<p>{message}</p>
+<p>{escape(message)}</p>{link}
 </main>
 </body>
 </html>
@@ -47,11 +49,7 @@ def _page(title: str, message: str, *, status_code: int = 200) -> HTMLResponse:
 
 
 def _refused(reason: str, *, status_code: int = 400) -> HTMLResponse:
-    response = _page(
-        "L'autorisation n'a pas abouti",
-        f'{escape(reason)} <a href="/consent">Recommencer</a>',
-        status_code=status_code,
-    )
+    response = _page("L'autorisation n'a pas abouti", reason, retry=True, status_code=status_code)
     response.delete_cookie(COOKIE)
     return response
 
@@ -114,7 +112,7 @@ def router(
         await access_tokens.consented(signed_in)
         response = _page(
             "Votre assistant est autorisé",
-            f"Votre assistant Twake Space peut désormais agir pour {escape(signed_in.user)}."
+            f"Votre assistant Twake Space peut désormais agir pour {signed_in.user}."
             " Vous pouvez fermer cette page.",
         )
         response.delete_cookie(COOKIE)
