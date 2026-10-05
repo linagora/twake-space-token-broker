@@ -1,5 +1,7 @@
 """Access tokens for the users who consented, which APISIX hands to the contracts."""
 
+import asyncio
+from collections import defaultdict
 from collections.abc import Callable
 
 from twake_space_token_broker.delegations import Delegations
@@ -25,6 +27,7 @@ class AccessTokens:
         self._lemonldap = lemonldap
         self._clock = clock
         self._cache: dict[str, Tokens] = {}
+        self._refreshing: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     async def consented(self, signed_in: SignedIn) -> None:
         """Keeps the user's new delegation in place of any earlier one, with its access token."""
@@ -34,9 +37,17 @@ class AccessTokens:
 
     async def of(self, user: str) -> str:
         """A fresh access token of the user, for the user's agent."""
+        # One refresh at a time per user: a rotated refresh token would void the others
+        async with self._refreshing[user]:
+            return self._fresh(user) or await self._refresh(user)
+
+    def _fresh(self, user: str) -> str | None:
         cached = self._cache.get(user)
         if cached is not None and self._clock() < cached.expires_at - REFRESH_MARGIN:
             return cached.access_token
+        return None
+
+    async def _refresh(self, user: str) -> str:
         refresh_token = await self._delegations.refresh_token_of(user)
         if refresh_token is None:
             raise DelegationMissing()

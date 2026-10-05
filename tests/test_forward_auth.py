@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from httpx import AsyncClient
 
@@ -137,3 +139,18 @@ async def test_a_refresh_token_lemonldap_rotates_serves_the_next_refresh(
 
     assert response.status_code == 200
     assert lemonldap.owner_of(bearer(response.headers["authorization"])) == MMAUDET
+
+
+async def test_simultaneous_calls_of_an_agent_share_one_refresh(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, clock: FakeClock
+) -> None:
+    lemonldap.rotates_refresh_tokens = True
+    await consent(client, lemonldap, MMAUDET)
+    clock.advance(ACCESS_TOKEN_LIFETIME)
+
+    responses = await asyncio.gather(
+        *(client.get("/forward-auth", headers=as_agent_of(MMAUDET)) for _ in range(3))
+    )
+
+    assert [response.status_code for response in responses] == [200, 200, 200]
+    assert len({response.headers["authorization"] for response in responses}) == 1
