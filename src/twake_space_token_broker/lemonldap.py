@@ -18,6 +18,10 @@ class GrantRefused(Exception):
     """LemonLDAP refused a code or a refresh token, which can no longer give any token."""
 
 
+class LemonLDAPUnavailable(Exception):
+    """LemonLDAP gave no usable answer, so the same request may work later."""
+
+
 @dataclass(frozen=True)
 class Tokens:
     access_token: str
@@ -44,6 +48,14 @@ def _subject(id_token: str) -> str:
         base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
     )
     return str(claims["sub"])
+
+
+def _json(response: httpx.Response) -> dict[str, Any]:
+    try:
+        body = response.json()
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
 
 
 def _tokens(body: dict[str, Any], requested_at: float) -> Tokens:
@@ -101,12 +113,20 @@ class LemonLDAP:
 
     async def _token(self, form: dict[str, str]) -> tuple[Tokens, dict[str, Any]]:
         requested_at = self._clock()
-        response = await self._http.post(
-            self._endpoint("token"),
-            data=form,
-            auth=(self._settings.client_id, self._settings.client_secret),
-        )
-        body: dict[str, Any] = response.json()
+        try:
+            response = await self._http.post(
+                self._endpoint("token"),
+                data=form,
+                auth=(self._settings.client_id, self._settings.client_secret),
+            )
+        except httpx.HTTPError as error:
+            raise LemonLDAPUnavailable(f"no answer ({type(error).__name__})") from error
+        body = _json(response)
         if response.status_code == 400 and body.get("error") == "invalid_grant":
             raise GrantRefused()
-        return _tokens(body, requested_at), body
+        if response.status_code != 200:
+            raise LemonLDAPUnavailable(f"HTTP {response.status_code} {body.get('error', '')}")
+        try:
+            return _tokens(body, requested_at), body
+        except (KeyError, TypeError, ValueError) as error:
+            raise LemonLDAPUnavailable("an answer without tokens") from error

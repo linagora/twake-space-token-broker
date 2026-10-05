@@ -5,6 +5,7 @@ import hashlib
 import itertools
 import json
 from dataclasses import dataclass
+from typing import Literal
 from urllib.parse import parse_qsl
 
 import httpx
@@ -39,6 +40,7 @@ class FakeLemonLDAP:
         self._codes: dict[str, _Code] = {}
         self._refresh_tokens: dict[str, str] = {}
         self._access_tokens: dict[str, str] = {}
+        self.outage: Literal["error page", "unreachable"] | None = None
         self.rotates_refresh_tokens = False
         """Twake's LemonLDAP does not rotate them, but another configuration could."""
         self.transport = httpx.MockTransport(self._token_endpoint)
@@ -73,6 +75,10 @@ class FakeLemonLDAP:
     def _token_endpoint(self, request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
         assert str(request.url) == f"{self._issuer}oauth2/token"
+        if self.outage == "unreachable":
+            raise httpx.ConnectError("Connection refused", request=request)
+        if self.outage == "error page":
+            return httpx.Response(503, html="<h1>Service Unavailable</h1>")
         if request.headers.get("authorization") != self._credentials:
             return _error(401, "invalid_client")
         form = dict(parse_qsl(request.content.decode()))

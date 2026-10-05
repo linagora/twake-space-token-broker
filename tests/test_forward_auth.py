@@ -1,4 +1,5 @@
 import asyncio
+from typing import Literal
 
 import pytest
 from httpx import AsyncClient
@@ -154,3 +155,27 @@ async def test_simultaneous_calls_of_an_agent_share_one_refresh(
 
     assert [response.status_code for response in responses] == [200, 200, 200]
     assert len({response.headers["authorization"] for response in responses}) == 1
+
+
+@pytest.mark.parametrize("outage", ["error page", "unreachable"])
+async def test_lemonldap_failing_to_refresh_is_a_bad_gateway(
+    client: AsyncClient,
+    lemonldap: FakeLemonLDAP,
+    clock: FakeClock,
+    outage: Literal["error page", "unreachable"],
+) -> None:
+    await consent(client, lemonldap, MMAUDET)
+    clock.advance(ACCESS_TOKEN_LIFETIME)
+    lemonldap.outage = outage
+
+    response = await client.get("/forward-auth", headers=as_agent_of(MMAUDET))
+
+    assert response.status_code == 502
+    assert response.headers["content-type"] == "application/problem+json"
+    assert response.json() == {
+        "type": "urn:twake:problem:lemonldap_unavailable",
+        "title": "LemonLDAP unavailable",
+        "status": 502,
+        "detail": "LemonLDAP did not answer the token request: try again later.",
+        "code": "lemonldap_unavailable",
+    }

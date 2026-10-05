@@ -1,11 +1,15 @@
 """The forward-auth endpoint APISIX calls before relaying an agent's call to a contract."""
 
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Response
 
+from twake_space_token_broker.lemonldap import LemonLDAPUnavailable
 from twake_space_token_broker.problems import Problem
 from twake_space_token_broker.tokens import AccessTokens, DelegationExpired, DelegationMissing
+
+logger = logging.getLogger(__name__)
 
 
 def _owner(
@@ -51,6 +55,14 @@ def router(tokens: AccessTokens, consent_url: str) -> APIRouter:
                 " consent link again.",
                 extensions={"consent_url": consent_url},
             ) from expired
+        except LemonLDAPUnavailable as unavailable:
+            logger.warning("LemonLDAP refreshed no token for %s: %s", owner, unavailable)
+            raise Problem(
+                status=502,
+                code="lemonldap_unavailable",
+                title="LemonLDAP unavailable",
+                detail="LemonLDAP did not answer the token request: try again later.",
+            ) from unavailable
         return Response(headers={"Authorization": f"Bearer {access_token}"})
 
     return routes
