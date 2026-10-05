@@ -36,6 +36,12 @@ def create_app(
         title="Twake Space token broker", docs_url=None, redoc_url=None, lifespan=lifespan
     )
     problems.install(app)
+
+    @app.get("/healthz", include_in_schema=False)
+    async def health() -> dict[str, str]:
+        """For the probes of Kubernetes."""
+        return {"status": "ok"}
+
     app.include_router(consent.router(lemonldap, Signer(settings.encryption_key), tokens, clock))
     app.include_router(forward_auth.router(tokens, settings.consent_url))
     return app
