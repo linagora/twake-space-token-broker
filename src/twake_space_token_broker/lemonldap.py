@@ -1,6 +1,6 @@
 """LemonLDAP, the OpenID Connect provider, as the broker's own client sees it."""
 
-import base64
+import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -9,6 +9,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from twake_space_token_broker import base64url
 from twake_space_token_broker.settings import Settings
 
 SCOPE = "openid email offline_access"
@@ -48,11 +49,13 @@ def _subject(id_token: str) -> str:
     It comes over TLS from the issuer, in answer to the broker's own credentials, so the
     signature needs no check (OpenID Connect Core, 3.1.3.7).
     """
-    payload = id_token.split(".")[1]
-    claims: dict[str, Any] = json.loads(
-        base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
-    )
+    claims: dict[str, Any] = json.loads(base64url.decode(id_token.split(".")[1]))
     return str(claims["sub"])
+
+
+def _challenge(verifier: str) -> str:
+    """The PKCE S256 challenge of a verifier."""
+    return base64url.encode(hashlib.sha256(verifier.encode()).digest())
 
 
 def _json(response: httpx.Response) -> dict[str, Any]:
@@ -82,7 +85,7 @@ class LemonLDAP:
     def _endpoint(self, path: str) -> str:
         return f"{self._settings.issuer.rstrip('/')}/oauth2/{path}"
 
-    def authorize_url(self, *, state: str, code_challenge: str) -> str:
+    def authorize_url(self, *, state: str, verifier: str) -> str:
         """Where the user signs in, to grant the broker offline access with PKCE."""
         query = urlencode(
             {
@@ -91,7 +94,7 @@ class LemonLDAP:
                 "redirect_uri": self._settings.redirect_uri,
                 "scope": SCOPE,
                 "state": state,
-                "code_challenge": code_challenge,
+                "code_challenge": _challenge(verifier),
                 "code_challenge_method": "S256",
             }
         )

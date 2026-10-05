@@ -1,7 +1,5 @@
 """The fixed consent link, through which a user lets their agent act for them."""
 
-import base64
-import hashlib
 import logging
 import secrets
 from collections.abc import Callable
@@ -25,11 +23,6 @@ logger = logging.getLogger(__name__)
 COOKIE = "twake_space_consent"
 COOKIE_LIFETIME = 600
 """Seconds a user has to sign in once the consent has started."""
-
-
-def _challenge(verifier: str) -> str:
-    digest = hashlib.sha256(verifier.encode()).digest()
-    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
 
 
 def _page(title: str, message: str, *, status_code: int = 200) -> HTMLResponse:
@@ -73,7 +66,7 @@ def router(
         state = secrets.token_urlsafe(32)
         verifier = secrets.token_urlsafe(48)
         response = RedirectResponse(
-            lemonldap.authorize_url(state=state, code_challenge=_challenge(verifier)),
+            lemonldap.authorize_url(state=state, verifier=verifier),
             status_code=302,
         )
         response.set_cookie(
