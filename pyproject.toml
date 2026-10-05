@@ -1,0 +1,51 @@
+[project]
+name = "twake-space-token-broker"
+version = "0.1.0"
+description = "Keeps Twake Space users' delegated tokens for their personal agents"
+readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Michel-Marie MAUDET", email = "mmaudet@linagora.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "cryptography>=50.0.2",
+    "fastapi>=0.142.2",
+    "httpx>=0.28.1",
+    "psycopg-pool>=3.3.3",
+    "psycopg[binary]>=3.3.6",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.29,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "ASYNC"]
+
+[tool.mypy]
+strict = true
+python_version = "3.13"
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+
+[dependency-groups]
+dev = [
+    "asgi-lifespan>=2.1.0",
+    "mypy>=2.4.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.16.10",
+    "testcontainers[postgres]>=4.15.0",
+]
