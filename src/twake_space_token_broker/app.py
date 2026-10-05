@@ -28,11 +28,9 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        await pool.open()
-        await delegations.create_schema()
-        yield
-        await pool.close()
-        await http.aclose()
+        async with pool, http:
+            await delegations.create_schema()
+            yield
 
     app = FastAPI(
         title="Twake Space token broker", docs_url=None, redoc_url=None, lifespan=lifespan
