@@ -1,7 +1,10 @@
 """RFC 9457 problem details, the one error format of the broker's API."""
 
+from http import HTTPStatus
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
 class Problem(Exception):
@@ -36,9 +39,25 @@ class Problem(Exception):
         )
 
 
+def _http_error(error: StarletteHTTPException) -> Problem:
+    """Routing errors, such as an unknown path, named after their HTTP status."""
+    phrase = HTTPStatus(error.status_code).phrase
+    return Problem(
+        status=error.status_code,
+        code=phrase.lower().replace(" ", "_"),
+        title=phrase,
+        detail=str(error.detail),
+    )
+
+
 def install(app: FastAPI) -> None:
     async def handle_problem(_: Request, problem: Exception) -> JSONResponse:
         assert isinstance(problem, Problem)
         return problem.response()
 
+    async def handle_http_error(_: Request, error: Exception) -> JSONResponse:
+        assert isinstance(error, StarletteHTTPException)
+        return _http_error(error).response()
+
     app.add_exception_handler(Problem, handle_problem)
+    app.add_exception_handler(StarletteHTTPException, handle_http_error)
