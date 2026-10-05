@@ -44,6 +44,16 @@ def _page(title: str, message: str, *, status_code: int = 200) -> HTMLResponse:
     )
 
 
+def _refused(reason: str) -> HTMLResponse:
+    response = _page(
+        "L'autorisation n'a pas abouti",
+        f'{escape(reason)} <a href="/consent">Recommencer</a>',
+        status_code=400,
+    )
+    response.delete_cookie(COOKIE)
+    return response
+
+
 def router(lemonldap: LemonLDAP, signer: Signer, delegations: Delegations) -> APIRouter:
     routes = APIRouter()
 
@@ -66,8 +76,12 @@ def router(lemonldap: LemonLDAP, signer: Signer, delegations: Delegations) -> AP
         return response
 
     @routes.get("/callback")
-    async def callback(code: str, started: Annotated[str, Cookie(alias=COOKIE)]) -> HTMLResponse:
+    async def callback(
+        code: str, state: str, started: Annotated[str, Cookie(alias=COOKIE)]
+    ) -> HTMLResponse:
         flow = signer.verify(started) or {}
+        if not secrets.compare_digest(str(flow.get("state", "")).encode(), state.encode()):
+            return _refused("Cette page ne correspond pas à l'autorisation en cours.")
         signed_in = await lemonldap.redeem(code, flow["verifier"])
         assert signed_in.tokens.refresh_token is not None
         await delegations.save(signed_in.user, signed_in.tokens.refresh_token)

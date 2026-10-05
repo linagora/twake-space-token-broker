@@ -1,14 +1,22 @@
-from httpx import URL, AsyncClient
+from httpx import URL, AsyncClient, Response
 
 from tests.conftest import (
     CLIENT_ID,
     ISSUER,
     MMAUDET,
     PUBLIC_BASE_URL,
+    as_agent_of,
     consent,
     database_dump,
 )
 from tests.fake_lemonldap import FakeLemonLDAP
+
+
+def assert_consent_refused(response: Response) -> None:
+    """The user sees why, in French, with a link to start over."""
+    assert response.status_code == 400
+    assert response.headers["content-type"].startswith("text/html")
+    assert 'href="/consent"' in response.text
 
 
 async def test_consent_sends_the_user_to_lemonldap_with_pkce(client: AsyncClient) -> None:
@@ -43,3 +51,16 @@ async def test_consent_stores_the_users_refresh_token_encrypted(
     refresh_token = lemonldap.refresh_token_of(MMAUDET)
     assert refresh_token not in stored
     assert refresh_token.encode().hex() not in stored
+
+
+async def test_a_callback_whose_state_differs_from_the_consent_in_progress_is_refused(
+    client: AsyncClient, lemonldap: FakeLemonLDAP
+) -> None:
+    started = await client.get("/consent")
+    callback = URL(lemonldap.sign_in(started.headers["location"], MMAUDET))
+
+    response = await client.get(callback.copy_set_param("state", "forged"))
+
+    assert_consent_refused(response)
+    unknown = await client.get("/forward-auth", headers=as_agent_of(MMAUDET))
+    assert unknown.json()["code"] == "delegation_missing"
