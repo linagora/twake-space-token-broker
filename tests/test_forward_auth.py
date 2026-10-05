@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 from typing import Literal
 
 import pytest
@@ -201,3 +202,17 @@ async def test_a_delegation_outlives_a_restart_of_the_broker(
 
     assert response.status_code == 200
     assert lemonldap.owner_of(bearer(response.headers["authorization"])) == MMAUDET
+
+
+async def test_a_delegation_kept_under_another_encryption_key_counts_as_expired(
+    settings: Settings, lemonldap: FakeLemonLDAP, clock: FakeClock
+) -> None:
+    async with running(settings, lemonldap, clock) as broker:
+        await consent(broker, lemonldap, MMAUDET)
+
+    with_another_key = replace(settings, encryption_key=bytes(32))
+    async with running(with_another_key, lemonldap, clock) as broker:
+        response = await broker.get("/forward-auth", headers=as_agent_of(MMAUDET))
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "delegation_expired"

@@ -1,11 +1,15 @@
 """Access tokens for the users who consented, which APISIX hands to the contracts."""
 
 import asyncio
+import logging
 from collections import defaultdict
 from collections.abc import Callable
 
 from twake_space_token_broker.delegations import Delegations
+from twake_space_token_broker.keys import Undecryptable
 from twake_space_token_broker.lemonldap import GrantRefused, LemonLDAP, SignedIn, Tokens
+
+logger = logging.getLogger(__name__)
 
 REFRESH_MARGIN = 300
 """Seconds before its expiry when an access token is no longer handed out, but refreshed."""
@@ -47,7 +51,11 @@ class AccessTokens:
         return None
 
     async def _refresh(self, user: str) -> str:
-        refresh_token = await self._delegations.refresh_token_of(user)
+        try:
+            refresh_token = await self._delegations.refresh_token_of(user)
+        except Undecryptable as undecryptable:
+            logger.warning("The delegation of %s does not decrypt with ENCRYPTION_KEY", user)
+            raise DelegationExpired() from undecryptable
         if refresh_token is None:
             raise DelegationMissing()
         try:

@@ -7,6 +7,7 @@ import json
 import os
 from typing import Any
 
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -55,6 +56,10 @@ class Signer:
         return _encode(hmac.new(self._key, body.encode(), hashlib.sha256).digest())
 
 
+class Undecryptable(Exception):
+    """Encrypted with another key, or for another user."""
+
+
 class Cipher:
     """Encrypts a user's refresh token, bound to that user so that it decrypts for no one else."""
 
@@ -67,4 +72,7 @@ class Cipher:
 
     def decrypt(self, ciphertext: bytes, *, user: str) -> str:
         nonce, sealed = ciphertext[:NONCE_SIZE], ciphertext[NONCE_SIZE:]
-        return self._aead.decrypt(nonce, sealed, user.encode()).decode()
+        try:
+            return self._aead.decrypt(nonce, sealed, user.encode()).decode()
+        except InvalidTag as error:
+            raise Undecryptable() from error
