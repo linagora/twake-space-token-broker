@@ -8,10 +8,14 @@ class AccessTokens:
     def __init__(self, delegations: Delegations, lemonldap: LemonLDAP) -> None:
         self._delegations = delegations
         self._lemonldap = lemonldap
+        self._cache: dict[str, str] = {}
 
     async def of(self, user: str) -> str:
         """A fresh access token of the user, for the user's agent."""
+        if user in self._cache:
+            return self._cache[user]
         refresh_token = await self._delegations.refresh_token_of(user)
         assert refresh_token is not None
         tokens = await self._lemonldap.refresh(refresh_token)
+        self._cache[user] = tokens.access_token
         return tokens.access_token

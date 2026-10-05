@@ -1,4 +1,5 @@
-from collections.abc import AsyncIterator
+import time
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
 import httpx
@@ -14,7 +15,10 @@ from twake_space_token_broker.tokens import AccessTokens
 
 
 def create_app(
-    settings: Settings, *, lemonldap_transport: httpx.AsyncBaseTransport | None = None
+    settings: Settings,
+    *,
+    lemonldap_transport: httpx.AsyncBaseTransport | None = None,
+    clock: Callable[[], float] = time.time,
 ) -> FastAPI:
     pool = AsyncConnectionPool(settings.database_url, open=False)
     http = httpx.AsyncClient(transport=lemonldap_transport, timeout=10.0)

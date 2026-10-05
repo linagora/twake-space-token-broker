@@ -22,6 +22,19 @@ MMAUDET = "mmaudet@example.test"
 ALICE = "alice@example.test"
 
 
+class FakeClock:
+    """The time the broker reads, in seconds since the epoch, moved on by the test only."""
+
+    def __init__(self) -> None:
+        self.now = 1_790_000_000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
 @pytest.fixture(scope="session")
 def postgres() -> Iterator[PostgresContainer]:
     with PostgresContainer("postgres:18-alpine", driver=None) as postgres:
@@ -58,8 +71,15 @@ def lemonldap() -> FakeLemonLDAP:
 
 
 @pytest.fixture
-async def client(settings: Settings, lemonldap: FakeLemonLDAP) -> AsyncIterator[AsyncClient]:
-    app = create_app(settings, lemonldap_transport=lemonldap.transport)
+def clock() -> FakeClock:
+    return FakeClock()
+
+
+@pytest.fixture
+async def client(
+    settings: Settings, lemonldap: FakeLemonLDAP, clock: FakeClock
+) -> AsyncIterator[AsyncClient]:
+    app = create_app(settings, lemonldap_transport=lemonldap.transport, clock=clock)
     async with (
         LifespanManager(app) as manager,
         AsyncClient(transport=ASGITransport(app=manager.app), base_url=PUBLIC_BASE_URL) as client,
