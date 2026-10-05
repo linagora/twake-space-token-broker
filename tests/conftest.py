@@ -1,5 +1,6 @@
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 
 import psycopg
 import pytest
@@ -75,15 +76,24 @@ def clock() -> FakeClock:
     return FakeClock()
 
 
-@pytest.fixture
-async def client(
+@asynccontextmanager
+async def running(
     settings: Settings, lemonldap: FakeLemonLDAP, clock: FakeClock
 ) -> AsyncIterator[AsyncClient]:
+    """The broker, from its start to its stop."""
     app = create_app(settings, lemonldap_transport=lemonldap.transport, clock=clock)
     async with (
         LifespanManager(app) as manager,
         AsyncClient(transport=ASGITransport(app=manager.app), base_url=PUBLIC_BASE_URL) as client,
     ):
+        yield client
+
+
+@pytest.fixture
+async def client(
+    settings: Settings, lemonldap: FakeLemonLDAP, clock: FakeClock
+) -> AsyncIterator[AsyncClient]:
+    async with running(settings, lemonldap, clock) as client:
         yield client
 
 

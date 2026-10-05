@@ -4,8 +4,17 @@ from typing import Literal
 import pytest
 from httpx import AsyncClient
 
-from tests.conftest import ALICE, MMAUDET, PUBLIC_BASE_URL, FakeClock, as_agent_of, consent
+from tests.conftest import (
+    ALICE,
+    MMAUDET,
+    PUBLIC_BASE_URL,
+    FakeClock,
+    as_agent_of,
+    consent,
+    running,
+)
 from tests.fake_lemonldap import ACCESS_TOKEN_LIFETIME, FakeLemonLDAP
+from twake_space_token_broker.settings import Settings
 
 
 def bearer(authorization: str) -> str:
@@ -179,3 +188,16 @@ async def test_lemonldap_failing_to_refresh_is_a_bad_gateway(
         "detail": "LemonLDAP did not answer the token request: try again later.",
         "code": "lemonldap_unavailable",
     }
+
+
+async def test_a_delegation_outlives_a_restart_of_the_broker(
+    settings: Settings, lemonldap: FakeLemonLDAP, clock: FakeClock
+) -> None:
+    async with running(settings, lemonldap, clock) as broker:
+        await consent(broker, lemonldap, MMAUDET)
+
+    async with running(settings, lemonldap, clock) as broker:
+        response = await broker.get("/forward-auth", headers=as_agent_of(MMAUDET))
+
+    assert response.status_code == 200
+    assert lemonldap.owner_of(bearer(response.headers["authorization"])) == MMAUDET
