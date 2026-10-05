@@ -5,6 +5,7 @@ from tests.conftest import (
     ISSUER,
     MMAUDET,
     PUBLIC_BASE_URL,
+    FakeClock,
     as_agent_of,
     consent,
     database_dump,
@@ -72,6 +73,18 @@ async def test_a_callback_in_a_browser_that_did_not_start_the_consent_is_refused
     started = await client.get("/consent")
     callback = lemonldap.sign_in(started.headers["location"], MMAUDET)
     client.cookies.clear()
+
+    response = await client.get(callback)
+
+    assert_consent_refused(response)
+
+
+async def test_a_consent_left_for_more_than_ten_minutes_is_refused(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, clock: FakeClock
+) -> None:
+    started = await client.get("/consent")
+    callback = lemonldap.sign_in(started.headers["location"], MMAUDET)
+    clock.advance(601)
 
     response = await client.get(callback)
 

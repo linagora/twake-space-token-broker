@@ -37,7 +37,9 @@ def create_app(
         title="Twake Space token broker", docs_url=None, redoc_url=None, lifespan=lifespan
     )
     problems.install(app)
-    app.include_router(consent.router(lemonldap, Signer(settings.encryption_key), delegations))
+    app.include_router(
+        consent.router(lemonldap, Signer(settings.encryption_key), delegations, clock)
+    )
     app.include_router(
         forward_auth.router(AccessTokens(delegations, lemonldap, clock), settings.consent_url)
     )

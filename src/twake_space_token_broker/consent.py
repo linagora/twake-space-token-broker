@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import secrets
+from collections.abc import Callable
 from html import escape
 from typing import Annotated
 
@@ -54,7 +55,9 @@ def _refused(reason: str) -> HTMLResponse:
     return response
 
 
-def router(lemonldap: LemonLDAP, signer: Signer, delegations: Delegations) -> APIRouter:
+def router(
+    lemonldap: LemonLDAP, signer: Signer, delegations: Delegations, clock: Callable[[], float]
+) -> APIRouter:
     routes = APIRouter()
 
     @routes.get("/consent")
@@ -67,7 +70,9 @@ def router(lemonldap: LemonLDAP, signer: Signer, delegations: Delegations) -> AP
         )
         response.set_cookie(
             COOKIE,
-            signer.sign({"state": state, "verifier": verifier}),
+            signer.sign(
+                {"state": state, "verifier": verifier, "expires": clock() + COOKIE_LIFETIME}
+            ),
             max_age=COOKIE_LIFETIME,
             httponly=True,
             secure=True,
@@ -82,6 +87,8 @@ def router(lemonldap: LemonLDAP, signer: Signer, delegations: Delegations) -> AP
         flow = signer.verify(started) if started else None
         if flow is None:
             return _refused("Aucune autorisation n'est en cours dans ce navigateur.")
+        if clock() >= flow["expires"]:
+            return _refused("L'autorisation a expiré.")
         if not secrets.compare_digest(str(flow.get("state", "")).encode(), state.encode()):
             return _refused("Cette page ne correspond pas à l'autorisation en cours.")
         signed_in = await lemonldap.redeem(code, flow["verifier"])
