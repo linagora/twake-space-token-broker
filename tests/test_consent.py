@@ -13,7 +13,7 @@ from tests.conftest import (
 from tests.fake_lemonldap import FakeLemonLDAP
 
 
-def assert_consent_refused(response: Response, status_code: int = 400) -> None:
+def assert_consent_failed(response: Response, status_code: int = 400) -> None:
     """The user sees why, in French, with a link to start over."""
     assert response.status_code == status_code
     assert response.headers["content-type"].startswith("text/html")
@@ -62,7 +62,7 @@ async def test_a_callback_whose_state_differs_from_the_consent_in_progress_is_re
 
     response = await client.get(callback.copy_set_param("state", "forged"))
 
-    assert_consent_refused(response)
+    assert_consent_failed(response)
     unknown = await client.get("/forward-auth", headers=as_agent_of(MMAUDET))
     assert unknown.json()["code"] == "delegation_missing"
 
@@ -76,7 +76,7 @@ async def test_a_callback_in_a_browser_that_did_not_start_the_consent_is_refused
 
     response = await client.get(callback)
 
-    assert_consent_refused(response)
+    assert_consent_failed(response)
 
 
 async def test_a_consent_left_for_more_than_ten_minutes_is_refused(
@@ -88,7 +88,7 @@ async def test_a_consent_left_for_more_than_ten_minutes_is_refused(
 
     response = await client.get(callback)
 
-    assert_consent_refused(response)
+    assert_consent_failed(response)
 
 
 async def test_a_sign_in_lemonldap_turned_down_is_refused(
@@ -101,7 +101,7 @@ async def test_a_sign_in_lemonldap_turned_down_is_refused(
         callback.copy_remove_param("code").copy_set_param("error", "access_denied")
     )
 
-    assert_consent_refused(response)
+    assert_consent_failed(response)
 
 
 async def test_a_code_lemonldap_refuses_is_refused(
@@ -112,7 +112,7 @@ async def test_a_code_lemonldap_refuses_is_refused(
 
     response = await client.get(callback.copy_set_param("code", "code-unknown"))
 
-    assert_consent_refused(response)
+    assert_consent_failed(response)
 
 
 async def test_a_consent_lemonldap_cannot_complete_is_a_bad_gateway(
@@ -124,7 +124,7 @@ async def test_a_consent_lemonldap_cannot_complete_is_a_bad_gateway(
 
     response = await client.get(callback)
 
-    assert_consent_refused(response, status_code=502)
+    assert_consent_failed(response, status_code=502)
 
 
 async def test_a_consent_without_offline_access_is_a_bad_gateway(
@@ -134,4 +134,4 @@ async def test_a_consent_without_offline_access_is_a_bad_gateway(
 
     response = await consent(client, lemonldap, MMAUDET)
 
-    assert_consent_refused(response, status_code=502)
+    assert_consent_failed(response, status_code=502)
