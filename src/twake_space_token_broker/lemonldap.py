@@ -22,6 +22,10 @@ class LemonLDAPUnavailable(Exception):
     """LemonLDAP gave no usable answer, so the same request may work later."""
 
 
+class OfflineAccessDenied(Exception):
+    """LemonLDAP issued no refresh token, so the broker could never act for the user later."""
+
+
 @dataclass(frozen=True)
 class Tokens:
     access_token: str
@@ -34,6 +38,7 @@ class Tokens:
 class SignedIn:
     user: str
     """The user's email, which is the subject LemonLDAP names its users by on Twake."""
+    refresh_token: str
     tokens: Tokens
 
 
@@ -102,7 +107,13 @@ class LemonLDAP:
                 "code_verifier": verifier,
             }
         )
-        return SignedIn(user=_subject(body["id_token"]), tokens=tokens)
+        if tokens.refresh_token is None:
+            raise OfflineAccessDenied()
+        try:
+            user = _subject(body["id_token"])
+        except (KeyError, IndexError, ValueError) as error:
+            raise LemonLDAPUnavailable("an answer without the user's identity") from error
+        return SignedIn(user=user, refresh_token=tokens.refresh_token, tokens=tokens)
 
     async def refresh(self, refresh_token: str) -> Tokens:
         """A new access token for the user the refresh token was issued to."""

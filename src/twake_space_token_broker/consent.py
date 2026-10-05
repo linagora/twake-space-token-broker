@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import logging
 import secrets
 from collections.abc import Callable
 from html import escape
@@ -11,8 +12,15 @@ from fastapi import APIRouter, Cookie
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from twake_space_token_broker.keys import Signer
-from twake_space_token_broker.lemonldap import LemonLDAP
+from twake_space_token_broker.lemonldap import (
+    GrantRefused,
+    LemonLDAP,
+    LemonLDAPUnavailable,
+    OfflineAccessDenied,
+)
 from twake_space_token_broker.tokens import AccessTokens
+
+logger = logging.getLogger(__name__)
 
 COOKIE = "twake_space_consent"
 COOKIE_LIFETIME = 600
@@ -45,11 +53,11 @@ def _page(title: str, message: str, *, status_code: int = 200) -> HTMLResponse:
     )
 
 
-def _refused(reason: str) -> HTMLResponse:
+def _refused(reason: str, *, status_code: int = 400) -> HTMLResponse:
     response = _page(
         "L'autorisation n'a pas abouti",
         f'{escape(reason)} <a href="/consent">Recommencer</a>',
-        status_code=400,
+        status_code=status_code,
     )
     response.delete_cookie(COOKIE)
     return response
@@ -95,7 +103,18 @@ def router(
             return _refused("Cette page ne correspond pas à l'autorisation en cours.")
         if code is None:
             return _refused("LemonLDAP n'a pas accordé l'autorisation.")
-        signed_in = await lemonldap.redeem(code, flow["verifier"])
+        try:
+            signed_in = await lemonldap.redeem(code, flow["verifier"])
+        except GrantRefused:
+            return _refused("LemonLDAP a refusé le code d'autorisation.")
+        except LemonLDAPUnavailable as unavailable:
+            logger.warning("LemonLDAP completed no consent: %s", unavailable)
+            return _refused("LemonLDAP n'a pas pu terminer l'autorisation.", status_code=502)
+        except OfflineAccessDenied:
+            logger.warning("LemonLDAP granted no offline access: check the client's options")
+            return _refused(
+                "LemonLDAP n'a pas accordé d'accès hors ligne à l'assistant.", status_code=502
+            )
         await tokens.consented(signed_in)
         response = _page(
             "Votre assistant est autorisé",

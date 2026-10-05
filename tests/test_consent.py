@@ -102,3 +102,36 @@ async def test_a_sign_in_lemonldap_turned_down_is_refused(
     )
 
     assert_consent_refused(response)
+
+
+async def test_a_code_lemonldap_refuses_is_refused(
+    client: AsyncClient, lemonldap: FakeLemonLDAP
+) -> None:
+    started = await client.get("/consent")
+    callback = URL(lemonldap.sign_in(started.headers["location"], MMAUDET))
+
+    response = await client.get(callback.copy_set_param("code", "code-unknown"))
+
+    assert_consent_refused(response)
+
+
+async def test_a_consent_lemonldap_cannot_complete_is_a_bad_gateway(
+    client: AsyncClient, lemonldap: FakeLemonLDAP
+) -> None:
+    started = await client.get("/consent")
+    callback = lemonldap.sign_in(started.headers["location"], MMAUDET)
+    lemonldap.outage = "unreachable"
+
+    response = await client.get(callback)
+
+    assert_consent_refused(response, status_code=502)
+
+
+async def test_a_consent_without_offline_access_is_a_bad_gateway(
+    client: AsyncClient, lemonldap: FakeLemonLDAP
+) -> None:
+    lemonldap.grants_offline_access = False
+
+    response = await consent(client, lemonldap, MMAUDET)
+
+    assert_consent_refused(response, status_code=502)

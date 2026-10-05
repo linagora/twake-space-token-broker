@@ -31,8 +31,7 @@ class AccessTokens:
 
     async def consented(self, signed_in: SignedIn) -> None:
         """Keeps the user's new delegation in place of any earlier one, with its access token."""
-        assert signed_in.tokens.refresh_token is not None
-        await self._delegations.save(signed_in.user, signed_in.tokens.refresh_token)
+        await self._delegations.save(signed_in.user, signed_in.refresh_token)
         self._cache[signed_in.user] = signed_in.tokens
 
     async def of(self, user: str) -> str:

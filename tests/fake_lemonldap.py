@@ -41,6 +41,7 @@ class FakeLemonLDAP:
         self._refresh_tokens: dict[str, str] = {}
         self._access_tokens: dict[str, str] = {}
         self.outage: Literal["error page", "unreachable"] | None = None
+        self.grants_offline_access = True
         self.rotates_refresh_tokens = False
         """Twake's LemonLDAP does not rotate them, but another configuration could."""
         self.transport = httpx.MockTransport(self._token_endpoint)
@@ -95,16 +96,12 @@ class FakeLemonLDAP:
         verifier = form.get("code_verifier", "")
         if _encode(hashlib.sha256(verifier.encode()).digest()) != code.challenge:
             return _error(400, "invalid_grant")
-        refresh_token = f"refresh-{next(self._serial)}"
-        self._refresh_tokens[refresh_token] = code.user
-        return httpx.Response(
-            200,
-            json={
-                **self._access(code.user),
-                "refresh_token": refresh_token,
-                "id_token": self._id_token(code.user),
-            },
-        )
+        tokens = {**self._access(code.user), "id_token": self._id_token(code.user)}
+        if self.grants_offline_access:
+            refresh_token = f"refresh-{next(self._serial)}"
+            self._refresh_tokens[refresh_token] = code.user
+            tokens["refresh_token"] = refresh_token
+        return httpx.Response(200, json=tokens)
 
     def _refresh(self, form: dict[str, str]) -> httpx.Response:
         user = self._refresh_tokens.get(form.get("refresh_token", ""))
