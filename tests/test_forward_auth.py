@@ -67,3 +67,23 @@ async def test_an_expired_delegation_is_refused_with_the_consent_link(
         "code": "delegation_expired",
         "consent_url": f"{PUBLIC_BASE_URL}/consent",
     }
+
+
+async def test_an_owner_who_never_consented_is_refused_with_the_consent_link(
+    client: AsyncClient, lemonldap: FakeLemonLDAP
+) -> None:
+    await consent(client, lemonldap, MMAUDET)
+
+    response = await client.get("/forward-auth", headers=as_agent_of(ALICE))
+
+    assert response.status_code == 401
+    assert response.headers["content-type"] == "application/problem+json"
+    assert response.json() == {
+        "type": "urn:twake:problem:delegation_missing",
+        "title": "Delegation missing",
+        "status": 401,
+        "detail": "The user has not let their agent act for them yet: they must open the consent"
+        " link.",
+        "code": "delegation_missing",
+        "consent_url": f"{PUBLIC_BASE_URL}/consent",
+    }

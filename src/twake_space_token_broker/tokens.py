@@ -10,6 +10,10 @@ REFRESH_MARGIN = 300
 """Seconds before its expiry when an access token is no longer handed out, but refreshed."""
 
 
+class DelegationMissing(Exception):
+    """The user never consented to their agent acting for them."""
+
+
 class DelegationExpired(Exception):
     """The user consented, but LemonLDAP no longer honours their consent."""
 
@@ -35,7 +39,8 @@ class AccessTokens:
         if cached is not None and self._clock() < cached.expires_at - REFRESH_MARGIN:
             return cached.access_token
         refresh_token = await self._delegations.refresh_token_of(user)
-        assert refresh_token is not None
+        if refresh_token is None:
+            raise DelegationMissing()
         requested_at = self._clock()
         try:
             tokens = await self._lemonldap.refresh(refresh_token)

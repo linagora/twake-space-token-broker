@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Header, Response
 
 from twake_space_token_broker.problems import Problem
-from twake_space_token_broker.tokens import AccessTokens, DelegationExpired
+from twake_space_token_broker.tokens import AccessTokens, DelegationExpired, DelegationMissing
 
 
 def router(tokens: AccessTokens, consent_url: str) -> APIRouter:
@@ -16,6 +16,15 @@ def router(tokens: AccessTokens, consent_url: str) -> APIRouter:
         """Answers with the owner's access token, which APISIX passes on to the contract."""
         try:
             access_token = await tokens.of(x_twake_user_email)
+        except DelegationMissing as missing:
+            raise Problem(
+                status=401,
+                code="delegation_missing",
+                title="Delegation missing",
+                detail="The user has not let their agent act for them yet: they must open the"
+                " consent link.",
+                extensions={"consent_url": consent_url},
+            ) from missing
         except DelegationExpired as expired:
             raise Problem(
                 status=401,
