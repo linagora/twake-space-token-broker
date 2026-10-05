@@ -77,9 +77,11 @@ def router(lemonldap: LemonLDAP, signer: Signer, delegations: Delegations) -> AP
 
     @routes.get("/callback")
     async def callback(
-        code: str, state: str, started: Annotated[str, Cookie(alias=COOKIE)]
+        code: str, state: str, started: Annotated[str | None, Cookie(alias=COOKIE)] = None
     ) -> HTMLResponse:
-        flow = signer.verify(started) or {}
+        flow = signer.verify(started) if started else None
+        if flow is None:
+            return _refused("Aucune autorisation n'est en cours dans ce navigateur.")
         if not secrets.compare_digest(str(flow.get("state", "")).encode(), state.encode()):
             return _refused("Cette page ne correspond pas à l'autorisation en cours.")
         signed_in = await lemonldap.redeem(code, flow["verifier"])

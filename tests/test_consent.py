@@ -64,3 +64,15 @@ async def test_a_callback_whose_state_differs_from_the_consent_in_progress_is_re
     assert_consent_refused(response)
     unknown = await client.get("/forward-auth", headers=as_agent_of(MMAUDET))
     assert unknown.json()["code"] == "delegation_missing"
+
+
+async def test_a_callback_in_a_browser_that_did_not_start_the_consent_is_refused(
+    client: AsyncClient, lemonldap: FakeLemonLDAP
+) -> None:
+    started = await client.get("/consent")
+    callback = lemonldap.sign_in(started.headers["location"], MMAUDET)
+    client.cookies.clear()
+
+    response = await client.get(callback)
+
+    assert_consent_refused(response)
