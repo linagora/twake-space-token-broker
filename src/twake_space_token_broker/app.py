@@ -1,3 +1,4 @@
+import os
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -45,3 +46,8 @@ def create_app(
     app.include_router(consent.router(lemonldap, Signer(settings.encryption_key), tokens, clock))
     app.include_router(forward_auth.router(tokens, settings.consent_url))
     return app
+
+
+def create_app_from_env() -> FastAPI:
+    """Entry point for uvicorn --factory, configured by the environment."""
+    return create_app(Settings.from_env(os.environ))
