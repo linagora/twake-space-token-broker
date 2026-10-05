@@ -28,3 +28,11 @@ class Delegations:
                 "INSERT INTO delegations (user_email, refresh_token) VALUES (%s, %s)",
                 (user, self._cipher.encrypt(refresh_token, user=user)),
             )
+
+    async def refresh_token_of(self, user: str) -> str | None:
+        async with self._pool.connection() as connection:
+            cursor = await connection.execute(
+                "SELECT refresh_token FROM delegations WHERE user_email = %s", (user,)
+            )
+            row = await cursor.fetchone()
+        return None if row is None else self._cipher.decrypt(row[0], user=user)

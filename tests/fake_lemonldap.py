@@ -54,6 +54,10 @@ class FakeLemonLDAP:
         redirect = httpx.URL(url.params["redirect_uri"])
         return str(redirect.copy_with(params={"code": code, "state": url.params["state"]}))
 
+    def owner_of(self, access_token: str) -> str | None:
+        """The user an access token was issued to, if LemonLDAP issued it."""
+        return self._access_tokens.get(access_token)
+
     def refresh_token_of(self, user: str) -> str:
         """The last refresh token issued to the user."""
         return [token for token, owner in self._refresh_tokens.items() if owner == user][-1]
@@ -66,6 +70,8 @@ class FakeLemonLDAP:
         form = dict(parse_qsl(request.content.decode()))
         if form.get("grant_type") == "authorization_code":
             return self._redeem(form)
+        if form.get("grant_type") == "refresh_token":
+            return self._refresh(form)
         return _error(400, "unsupported_grant_type")
 
     def _redeem(self, form: dict[str, str]) -> httpx.Response:
@@ -85,6 +91,13 @@ class FakeLemonLDAP:
                 "id_token": self._id_token(code.user),
             },
         )
+
+    def _refresh(self, form: dict[str, str]) -> httpx.Response:
+        """A new access token, and no new refresh token: Twake's LemonLDAP does not rotate them."""
+        user = self._refresh_tokens.get(form.get("refresh_token", ""))
+        if user is None:
+            return _error(400, "invalid_grant")
+        return httpx.Response(200, json=self._access(user))
 
     def _access(self, user: str) -> dict[str, str | int]:
         access_token = f"access-{next(self._serial)}"

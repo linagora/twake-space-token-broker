@@ -19,6 +19,7 @@ CLIENT_ID = "twake-space-agents"
 CLIENT_SECRET = "client-secret-for-tests"
 
 MMAUDET = "mmaudet@example.test"
+ALICE = "alice@example.test"
 
 
 @pytest.fixture(scope="session")
@@ -71,6 +72,11 @@ async def consent(client: AsyncClient, lemonldap: FakeLemonLDAP, user: str) -> R
     client.cookies.clear()
     started = await client.get("/consent")
     return await client.get(lemonldap.sign_in(started.headers["location"], user))
+
+
+def as_agent_of(user: str) -> dict[str, str]:
+    """The header APISIX sets on a forward-auth request, naming the agent's owner."""
+    return {"X-Twake-User-Email": user}
 
 
 async def database_dump(database_url: str) -> str:

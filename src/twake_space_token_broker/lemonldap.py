@@ -84,6 +84,12 @@ class LemonLDAP:
         )
         return SignedIn(user=_subject(body["id_token"]), tokens=_tokens(body))
 
+    async def refresh(self, refresh_token: str) -> Tokens:
+        """A new access token for the user the refresh token was issued to."""
+        return _tokens(
+            await self._token({"grant_type": "refresh_token", "refresh_token": refresh_token})
+        )
+
     async def _token(self, form: dict[str, str]) -> dict[str, Any]:
         response = await self._http.post(
             self._endpoint("token"),

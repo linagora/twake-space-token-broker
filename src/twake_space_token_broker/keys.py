@@ -64,3 +64,7 @@ class Cipher:
     def encrypt(self, plaintext: str, *, user: str) -> bytes:
         nonce = os.urandom(NONCE_SIZE)
         return nonce + self._aead.encrypt(nonce, plaintext.encode(), user.encode())
+
+    def decrypt(self, ciphertext: bytes, *, user: str) -> str:
+        nonce, sealed = ciphertext[:NONCE_SIZE], ciphertext[NONCE_SIZE:]
+        return self._aead.decrypt(nonce, sealed, user.encode()).decode()
