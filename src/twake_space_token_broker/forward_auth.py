@@ -29,14 +29,14 @@ def _owner(
 Owner = Annotated[str, Depends(_owner)]
 
 
-def router(tokens: AccessTokens, consent_url: str) -> APIRouter:
+def router(access_tokens: AccessTokens, consent_url: str) -> APIRouter:
     routes = APIRouter()
 
     @routes.get("/forward-auth")
     async def forward_auth(owner: Owner) -> Response:
         """Answers with the owner's access token, which APISIX passes on to the contract."""
         try:
-            access_token = await tokens.of(owner)
+            access_token = await access_tokens.of(owner)
         except DelegationMissing as missing:
             raise Problem(
                 status=401,

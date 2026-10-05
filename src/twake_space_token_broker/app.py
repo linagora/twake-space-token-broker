@@ -25,7 +25,7 @@ def create_app(
     http = httpx.AsyncClient(transport=lemonldap_transport, timeout=10.0)
     delegations = Delegations(pool, Cipher(settings.encryption_key))
     lemonldap = LemonLDAP(settings, http, clock)
-    tokens = AccessTokens(delegations, lemonldap, clock)
+    access_tokens = AccessTokens(delegations, lemonldap, clock)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -43,8 +43,10 @@ def create_app(
         """For the probes of Kubernetes."""
         return {"status": "ok"}
 
-    app.include_router(consent.router(lemonldap, Signer(settings.encryption_key), tokens, clock))
-    app.include_router(forward_auth.router(tokens, settings.consent_url))
+    app.include_router(
+        consent.router(lemonldap, Signer(settings.encryption_key), access_tokens, clock)
+    )
+    app.include_router(forward_auth.router(access_tokens, settings.consent_url))
     return app
 
 

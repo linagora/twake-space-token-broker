@@ -57,7 +57,10 @@ def _refused(reason: str, *, status_code: int = 400) -> HTMLResponse:
 
 
 def router(
-    lemonldap: LemonLDAP, signer: Signer, tokens: AccessTokens, clock: Callable[[], float]
+    lemonldap: LemonLDAP,
+    signer: Signer,
+    access_tokens: AccessTokens,
+    clock: Callable[[], float],
 ) -> APIRouter:
     routes = APIRouter()
 
@@ -108,7 +111,7 @@ def router(
             return _refused(
                 "LemonLDAP n'a pas accordé d'accès hors ligne à l'assistant.", status_code=502
             )
-        await tokens.consented(signed_in)
+        await access_tokens.consented(signed_in)
         response = _page(
             "Votre assistant est autorisé",
             f"Votre assistant Twake Space peut désormais agir pour {escape(signed_in.user)}."
