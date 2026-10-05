@@ -13,9 +13,9 @@ from tests.conftest import (
 from tests.fake_lemonldap import FakeLemonLDAP
 
 
-def assert_consent_refused(response: Response) -> None:
+def assert_consent_refused(response: Response, status_code: int = 400) -> None:
     """The user sees why, in French, with a link to start over."""
-    assert response.status_code == 400
+    assert response.status_code == status_code
     assert response.headers["content-type"].startswith("text/html")
     assert 'href="/consent"' in response.text
 
@@ -87,5 +87,18 @@ async def test_a_consent_left_for_more_than_ten_minutes_is_refused(
     clock.advance(601)
 
     response = await client.get(callback)
+
+    assert_consent_refused(response)
+
+
+async def test_a_sign_in_lemonldap_turned_down_is_refused(
+    client: AsyncClient, lemonldap: FakeLemonLDAP
+) -> None:
+    started = await client.get("/consent")
+    callback = URL(lemonldap.sign_in(started.headers["location"], MMAUDET))
+
+    response = await client.get(
+        callback.copy_remove_param("code").copy_set_param("error", "access_denied")
+    )
 
     assert_consent_refused(response)

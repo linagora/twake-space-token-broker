@@ -82,15 +82,19 @@ def router(
 
     @routes.get("/callback")
     async def callback(
-        code: str, state: str, started: Annotated[str | None, Cookie(alias=COOKIE)] = None
+        code: str | None = None,
+        state: str | None = None,
+        started: Annotated[str | None, Cookie(alias=COOKIE)] = None,
     ) -> HTMLResponse:
         flow = signer.verify(started) if started else None
         if flow is None:
             return _refused("Aucune autorisation n'est en cours dans ce navigateur.")
         if clock() >= flow["expires"]:
             return _refused("L'autorisation a expiré.")
-        if not secrets.compare_digest(str(flow.get("state", "")).encode(), state.encode()):
+        if not secrets.compare_digest(flow["state"].encode(), (state or "").encode()):
             return _refused("Cette page ne correspond pas à l'autorisation en cours.")
+        if code is None:
+            return _refused("LemonLDAP n'a pas accordé l'autorisation.")
         signed_in = await lemonldap.redeem(code, flow["verifier"])
         await tokens.consented(signed_in)
         response = _page(
