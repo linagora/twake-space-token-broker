@@ -1,6 +1,6 @@
 from httpx import AsyncClient
 
-from tests.conftest import ALICE, MMAUDET, FakeClock, as_agent_of, consent
+from tests.conftest import ALICE, MMAUDET, PUBLIC_BASE_URL, FakeClock, as_agent_of, consent
 from tests.fake_lemonldap import ACCESS_TOKEN_LIFETIME, FakeLemonLDAP
 
 
@@ -46,3 +46,24 @@ async def test_an_access_token_is_refreshed_five_minutes_before_it_expires(
     refreshed = bearer(second.headers["authorization"])
     assert refreshed != bearer(first.headers["authorization"])
     assert lemonldap.owner_of(refreshed) == MMAUDET
+
+
+async def test_an_expired_delegation_is_refused_with_the_consent_link(
+    client: AsyncClient, lemonldap: FakeLemonLDAP
+) -> None:
+    await consent(client, lemonldap, MMAUDET)
+    lemonldap.end_offline_session(MMAUDET)
+
+    response = await client.get("/forward-auth", headers=as_agent_of(MMAUDET))
+
+    assert response.status_code == 401
+    assert response.headers["content-type"] == "application/problem+json"
+    assert response.json() == {
+        "type": "urn:twake:problem:delegation_expired",
+        "title": "Delegation expired",
+        "status": 401,
+        "detail": "The user's consent to their agent has expired: they must open the consent link"
+        " again.",
+        "code": "delegation_expired",
+        "consent_url": f"{PUBLIC_BASE_URL}/consent",
+    }

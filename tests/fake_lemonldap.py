@@ -62,6 +62,12 @@ class FakeLemonLDAP:
         """The last refresh token issued to the user."""
         return [token for token, owner in self._refresh_tokens.items() if owner == user][-1]
 
+    def end_offline_session(self, user: str) -> None:
+        """The user's offline session ends, as it does after 30 days: their refresh tokens die."""
+        self._refresh_tokens = {
+            token: owner for token, owner in self._refresh_tokens.items() if owner != user
+        }
+
     def _token_endpoint(self, request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
         assert str(request.url) == f"{self._issuer}oauth2/token"

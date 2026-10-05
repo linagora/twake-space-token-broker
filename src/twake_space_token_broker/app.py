@@ -6,7 +6,7 @@ import httpx
 from fastapi import FastAPI
 from psycopg_pool import AsyncConnectionPool
 
-from twake_space_token_broker import consent, forward_auth
+from twake_space_token_broker import consent, forward_auth, problems
 from twake_space_token_broker.delegations import Delegations
 from twake_space_token_broker.keys import Cipher, Signer
 from twake_space_token_broker.lemonldap import LemonLDAP
@@ -36,6 +36,9 @@ def create_app(
     app = FastAPI(
         title="Twake Space token broker", docs_url=None, redoc_url=None, lifespan=lifespan
     )
+    problems.install(app)
     app.include_router(consent.router(lemonldap, Signer(settings.encryption_key), delegations))
-    app.include_router(forward_auth.router(AccessTokens(delegations, lemonldap, clock)))
+    app.include_router(
+        forward_auth.router(AccessTokens(delegations, lemonldap, clock), settings.consent_url)
+    )
     return app

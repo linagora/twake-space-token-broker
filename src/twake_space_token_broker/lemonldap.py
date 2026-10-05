@@ -13,6 +13,10 @@ from twake_space_token_broker.settings import Settings
 SCOPE = "openid email offline_access"
 
 
+class GrantRefused(Exception):
+    """LemonLDAP refused a code or a refresh token, which can no longer give any token."""
+
+
 @dataclass(frozen=True)
 class Tokens:
     access_token: str
@@ -97,4 +101,6 @@ class LemonLDAP:
             auth=(self._settings.client_id, self._settings.client_secret),
         )
         body: dict[str, Any] = response.json()
+        if response.status_code == 400 and body.get("error") == "invalid_grant":
+            raise GrantRefused()
         return body

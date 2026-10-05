@@ -16,3 +16,7 @@ class Settings:
     @property
     def redirect_uri(self) -> str:
         return f"{self.public_base_url}/callback"
+
+    @property
+    def consent_url(self) -> str:
+        return f"{self.public_base_url}/consent"

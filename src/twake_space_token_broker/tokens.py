@@ -4,10 +4,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from twake_space_token_broker.delegations import Delegations
-from twake_space_token_broker.lemonldap import LemonLDAP
+from twake_space_token_broker.lemonldap import GrantRefused, LemonLDAP
 
 REFRESH_MARGIN = 300
 """Seconds before its expiry when an access token is no longer handed out, but refreshed."""
+
+
+class DelegationExpired(Exception):
+    """The user consented, but LemonLDAP no longer honours their consent."""
 
 
 @dataclass(frozen=True)
@@ -33,6 +37,9 @@ class AccessTokens:
         refresh_token = await self._delegations.refresh_token_of(user)
         assert refresh_token is not None
         requested_at = self._clock()
-        tokens = await self._lemonldap.refresh(refresh_token)
+        try:
+            tokens = await self._lemonldap.refresh(refresh_token)
+        except GrantRefused as refused:
+            raise DelegationExpired() from refused
         self._cache[user] = _Cached(tokens.access_token, requested_at + tokens.expires_in)
         return tokens.access_token
