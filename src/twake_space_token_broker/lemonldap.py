@@ -1,6 +1,5 @@
 """LemonLDAP, the OpenID Connect provider, as the broker's own client sees it."""
 
-import hashlib
 import json
 from collections.abc import Callable, Set
 from dataclasses import dataclass
@@ -9,7 +8,7 @@ from urllib.parse import urlencode
 
 import httpx
 
-from twake_space_token_broker import base64url
+from twake_space_token_broker import base64url, pkce
 from twake_space_token_broker.settings import Settings
 
 SCOPE = "openid email offline_access"
@@ -59,11 +58,6 @@ def _subject(id_token: str) -> str:
     return str(claims["sub"])
 
 
-def _challenge(verifier: str) -> str:
-    """The PKCE S256 challenge of a verifier."""
-    return base64url.encode(hashlib.sha256(verifier.encode()).digest())
-
-
 def _json(response: httpx.Response) -> dict[str, Any]:
     try:
         body = response.json()
@@ -101,7 +95,7 @@ class LemonLDAP:
                 "redirect_uri": self._settings.redirect_uri,
                 "scope": SCOPE,
                 "state": state,
-                "code_challenge": _challenge(verifier),
+                "code_challenge": pkce.challenge(verifier),
                 "code_challenge_method": "S256",
                 # Signs in again even with an open SSO session, which may be someone else's
                 "prompt": "login",
