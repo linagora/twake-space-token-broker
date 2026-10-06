@@ -48,13 +48,15 @@ class DriveTokens:
 
     async def forget(self, user: str) -> None:
         """Drops the user's Drive delegation, and removes its client from the instance."""
-        try:
-            earlier = await self._delegations.drive_of(user)
-        except Undecryptable:
-            # Kept under another ENCRYPTION_KEY: its client stays, for the owner to remove
-            earlier = None
-        await self._delegations.forget_drive(user)
-        self._cache.pop(user, None)
+        # Under the user's lock, so that a refresh in progress cannot put its token back
+        async with self._refreshing[user]:
+            try:
+                earlier = await self._delegations.drive_of(user)
+            except Undecryptable:
+                # Kept under another ENCRYPTION_KEY: its client stays, for the owner to remove
+                earlier = None
+            await self._delegations.forget_drive(user)
+            self._cache.pop(user, None)
         if earlier is None:
             return
         try:

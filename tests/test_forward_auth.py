@@ -634,6 +634,33 @@ async def test_consenting_again_without_a_drive_instance_drops_the_drive_delegat
     assert cozy_stack.clients_on(drive) == []
 
 
+async def test_a_refresh_running_while_the_owner_consents_again_puts_no_drive_token_back(
+    client: AsyncClient,
+    lemonldap: FakeLemonLDAP,
+    cozy_stack: FakeCozyStack,
+    clock: FakeClock,
+    drive: str,
+) -> None:
+    await consent_with_drive(client, lemonldap, cozy_stack, MMAUDET)
+    clock.advance(60)
+    cozy_stack.hold_token_answers()
+    refreshing = asyncio.create_task(
+        client.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET))
+    )
+    await cozy_stack.token_answer_held.wait()
+    del lemonldap.workplaces[MMAUDET]
+
+    consenting = asyncio.create_task(consent(client, lemonldap, MMAUDET))
+    # The new consent waits for the refresh in progress, whose answer is still on its way
+    await asyncio.wait({consenting}, timeout=0.5)
+    cozy_stack.release_token_answers()
+    await asyncio.gather(refreshing, consenting)
+
+    response = await client.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET))
+    assert response.status_code == 404
+    assert response.json()["code"] == "drive_instance_unknown"
+
+
 async def test_consenting_again_leaves_one_client_of_the_broker_on_the_drive_instance(
     client: AsyncClient, lemonldap: FakeLemonLDAP, cozy_stack: FakeCozyStack, drive: str
 ) -> None:

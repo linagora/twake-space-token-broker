@@ -5,6 +5,7 @@ token endpoint are a 400 with a sentence in `error`, and its answers say nothing
 access token expires.
 """
 
+import asyncio
 import base64
 import hashlib
 import itertools
@@ -55,10 +56,23 @@ class FakeCozyStack:
         self.outage: Outage | None = None
         self.rotates_refresh_tokens = False
         """cozy-stack does once an instance moved to another domain."""
+        self._released: asyncio.Event | None = None
+        self.token_answer_held = asyncio.Event()
+        """Set once an answer of the token endpoint waits for release_token_answers()."""
         self.transport = httpx.MockTransport(self._handle)
 
     def create_instance(self, host: str) -> None:
         self._instances[host] = _Instance()
+
+    def hold_token_answers(self) -> None:
+        """The token endpoint's answers, once given, wait until release_token_answers(), as on
+        a slow network."""
+        self._released = asyncio.Event()
+
+    def release_token_answers(self) -> None:
+        assert self._released is not None
+        self._released.set()
+        self._released = None
 
     def authorize(self, authorize_url: str) -> str:
         """The owner accepts on their instance: it sends their browser back with a code."""
@@ -116,7 +130,7 @@ class FakeCozyStack:
         assert url.params["redirect_uri"] in redirect_uris
         return client, httpx.URL(url.params["redirect_uri"])
 
-    def _handle(self, request: httpx.Request) -> httpx.Response:
+    async def _handle(self, request: httpx.Request) -> httpx.Response:
         if self.outage == "unreachable":
             raise httpx.ConnectError("Connection refused", request=request)
         instance = self._instances.get(request.url.host)
@@ -131,7 +145,11 @@ class FakeCozyStack:
         if request.method == "DELETE" and path.startswith("/auth/register/"):
             return self._unregister(instance, path.removeprefix("/auth/register/"), request)
         if request.method == "POST" and path == "/auth/access_token":
-            return self._access_token(request.url.host, instance, request)
+            answer = self._access_token(request.url.host, instance, request)
+            if self._released is not None:
+                self.token_answer_held.set()
+                await self._released.wait()
+            return answer
         return httpx.Response(404, json={"error": "Not Found"})
 
     def _register(self, instance: _Instance, request: httpx.Request) -> httpx.Response:
