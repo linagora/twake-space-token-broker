@@ -1,4 +1,4 @@
-"""A fake LemonLDAP, with the sign-in and the token endpoint the broker relies on."""
+"""A fake LemonLDAP, with the sign-in, the token endpoint and the userinfo the broker relies on."""
 
 import base64
 import hashlib
@@ -59,7 +59,11 @@ class FakeLemonLDAP:
         self.grants_offline_access = True
         self.rotates_refresh_tokens = False
         """Twake's LemonLDAP does not rotate them, but another configuration could."""
-        self.transport = httpx.MockTransport(self._token_endpoint)
+        self.workplaces: dict[str, str] = {}
+        """The host of each user's Drive instance, which userinfo releases as workplaceFqdn."""
+        self.userinfo_outage = False
+        """Whether userinfo alone answers an error page."""
+        self.transport = httpx.MockTransport(self._handle)
 
     def sign_in(self, authorize_url: str, user: str) -> str:
         """The user signs in: LemonLDAP sends their browser back with an authorization code."""
@@ -94,6 +98,27 @@ class FakeLemonLDAP:
     def delete_from_ldap(self, user: str) -> None:
         """The user leaves LDAP, but their offline session stays, as when nothing deleted it."""
         self._deleted_from_ldap.add(user)
+
+    def _handle(self, request: httpx.Request) -> httpx.Response:
+        if request.url.copy_with(query=None) == f"{self._issuer}oauth2/userinfo":
+            return self._userinfo(request)
+        return self._token_endpoint(request)
+
+    def _userinfo(self, request: httpx.Request) -> httpx.Response:
+        """The user's claims, in JSON as configured on Twake for the broker's client."""
+        assert request.method == "GET"
+        if self.outage == "unreachable":
+            raise httpx.ConnectError("Connection refused", request=request)
+        if self.outage == "error page" or self.userinfo_outage:
+            return httpx.Response(503, html="<h1>Service Unavailable</h1>")
+        scheme, _, access_token = request.headers.get("authorization", "").partition(" ")
+        user = self._access_tokens.get(access_token) if scheme == "Bearer" else None
+        if user is None:
+            return _error(401, "invalid_token")
+        claims = {"sub": user, "email": user}
+        if user in self.workplaces:
+            claims["workplaceFqdn"] = self.workplaces[user]
+        return httpx.Response(200, json=claims)
 
     def _token_endpoint(self, request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"

@@ -1,3 +1,6 @@
+from collections.abc import Callable
+
+import pytest
 from httpx import URL, AsyncClient, Response
 
 from tests.conftest import (
@@ -8,8 +11,10 @@ from tests.conftest import (
     FakeClock,
     as_agent_of,
     consent,
+    consent_with_drive,
     database_dump,
 )
+from tests.fake_cozy_stack import FakeCozyStack
 from tests.fake_lemonldap import FakeLemonLDAP
 
 
@@ -142,3 +147,88 @@ async def test_a_consent_without_offline_access_is_a_bad_gateway(
     response = await consent(client, lemonldap, MMAUDET)
 
     assert_consent_failed(response, status_code=502)
+
+
+async def test_consent_goes_on_to_the_owners_drive_instance_for_reading_and_creating_files(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, cozy_stack: FakeCozyStack, drive: str
+) -> None:
+    response = await consent(client, lemonldap, MMAUDET)
+
+    assert response.status_code == 302
+    location = URL(response.headers["location"])
+    assert str(location.copy_with(query=None)) == f"https://{drive}/auth/authorize"
+    assert location.params["scope"] == "io.cozy.files:GET,POST"
+    assert location.params["redirect_uri"] == f"{PUBLIC_BASE_URL}/callback"
+    assert len(location.params["code_challenge"]) == 43
+    [registered] = cozy_stack.clients_on(drive)
+    assert registered["redirect_uris"] == [f"{PUBLIC_BASE_URL}/callback"]
+    assert registered["client_name"] == "Assistant Twake Space"
+    # Listed among the applications connected to the instance, where the owner can remove it
+    assert registered["client_kind"] == "web"
+
+
+async def test_the_owner_authorizes_drive_through_the_same_consent(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, cozy_stack: FakeCozyStack, drive: str
+) -> None:
+    response = await consent_with_drive(client, lemonldap, cozy_stack, MMAUDET)
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert MMAUDET in response.text
+    assert "y compris dans Drive" in response.text
+    assert 'href="/consent"' not in response.text
+
+
+async def test_consent_stores_the_drive_delegation_encrypted(
+    client: AsyncClient,
+    lemonldap: FakeLemonLDAP,
+    cozy_stack: FakeCozyStack,
+    drive: str,
+    database_url: str,
+) -> None:
+    await consent_with_drive(client, lemonldap, cozy_stack, MMAUDET)
+
+    stored = await database_dump(database_url)
+    credentials = cozy_stack.credentials_on(drive)
+    assert len(credentials) == 3
+    for credential in credentials:
+        assert credential not in stored
+        assert credential.encode().hex() not in stored
+
+
+async def test_a_consent_without_a_drive_instance_completes_for_lemonldap_alone(
+    client: AsyncClient, lemonldap: FakeLemonLDAP
+) -> None:
+    response = await consent(client, lemonldap, MMAUDET)
+
+    assert response.status_code == 200
+    assert MMAUDET in response.text
+    assert "Drive n&#x27;est pas disponible" in response.text
+    authorized = await client.get("/forward-auth", headers=as_agent_of(MMAUDET))
+    assert authorized.status_code == 200
+
+
+def userinfo_failing(lemonldap: FakeLemonLDAP) -> None:
+    lemonldap.userinfo_outage = True
+
+
+def not_a_host_name(lemonldap: FakeLemonLDAP) -> None:
+    lemonldap.workplaces[MMAUDET] = f"https://{lemonldap.workplaces[MMAUDET]}/"
+
+
+@pytest.mark.parametrize("fail", [userinfo_failing, not_a_host_name])
+async def test_a_drive_instance_lemonldap_cannot_name_leaves_drive_out_of_the_consent(
+    client: AsyncClient,
+    lemonldap: FakeLemonLDAP,
+    cozy_stack: FakeCozyStack,
+    drive: str,
+    fail: Callable[[FakeLemonLDAP], None],
+) -> None:
+    """The consent never fails for Drive: an agent may need LemonLDAP's token alone."""
+    fail(lemonldap)
+
+    response = await consent(client, lemonldap, MMAUDET)
+
+    assert response.status_code == 200
+    assert "Drive n&#x27;est pas disponible" in response.text
+    assert cozy_stack.clients_on(drive) == []

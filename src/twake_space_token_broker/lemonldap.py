@@ -1,6 +1,7 @@
 """LemonLDAP, the OpenID Connect provider, as the broker's own client sees it."""
 
 import json
+import re
 from collections.abc import Callable, Set
 from dataclasses import dataclass
 from typing import Any
@@ -12,6 +13,12 @@ from twake_space_token_broker import base64url, pkce
 from twake_space_token_broker.settings import Settings
 
 SCOPE = "openid email offline_access"
+
+DRIVE_INSTANCE_CLAIM = "workplaceFqdn"
+"""The claim naming the host of the user's Drive instance, which the directory keeps."""
+
+_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+_HOST = re.compile(rf"{_LABEL}(?:\.{_LABEL})+")
 
 
 class GrantRefused(Exception):
@@ -121,6 +128,25 @@ class LemonLDAP:
         except (KeyError, IndexError, ValueError) as error:
             raise LemonLDAPUnavailable("an answer without the user's identity") from error
         return SignedIn(user=user, refresh_token=tokens.refresh_token, tokens=tokens)
+
+    async def drive_instance(self, access_token: str) -> str | None:
+        """The host of the user's Drive instance, if LemonLDAP releases it in their userinfo."""
+        try:
+            response = await self._http.get(
+                self._endpoint("userinfo"), headers={"Authorization": f"Bearer {access_token}"}
+            )
+        except httpx.HTTPError as error:
+            raise LemonLDAPUnavailable(f"no answer ({type(error).__name__})") from error
+        body = _json(response)
+        if response.status_code != 200 or not body:
+            raise LemonLDAPUnavailable(f"HTTP {response.status_code} {body.get('error', '')}")
+        host = body.get(DRIVE_INSTANCE_CLAIM)
+        if host is None:
+            return None
+        # The broker calls the instance at this host: a URL or a path must never get through
+        if not isinstance(host, str) or not _HOST.fullmatch(host.lower()):
+            raise LemonLDAPUnavailable(f"a {DRIVE_INSTANCE_CLAIM} that is no host name")
+        return host.lower()
 
     async def refresh(self, refresh_token: str) -> Tokens:
         """A new access token for the user the refresh token was issued to."""

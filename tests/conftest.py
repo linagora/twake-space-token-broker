@@ -10,6 +10,7 @@ from psycopg import sql
 from psycopg.conninfo import make_conninfo
 from testcontainers.community.postgres import PostgresContainer
 
+from tests.fake_cozy_stack import FakeCozyStack
 from tests.fake_lemonldap import FakeLemonLDAP
 from twake_space_token_broker.app import create_app
 from twake_space_token_broker.settings import Settings
@@ -21,6 +22,8 @@ CLIENT_SECRET = "client-secret-for-tests"
 
 MMAUDET = "mmaudet@example.test"
 ALICE = "alice@example.test"
+MMAUDET_DRIVE = "mmaudet.twake.example.test"
+"""The host of MMAUDET's Drive instance."""
 
 
 class FakeClock:
@@ -81,12 +84,33 @@ def clock() -> FakeClock:
     return FakeClock()
 
 
+@pytest.fixture
+def cozy_stack() -> FakeCozyStack:
+    return FakeCozyStack()
+
+
+@pytest.fixture
+def drive(lemonldap: FakeLemonLDAP, cozy_stack: FakeCozyStack) -> str:
+    """MMAUDET's Drive instance, which LemonLDAP names in workplaceFqdn."""
+    cozy_stack.create_instance(MMAUDET_DRIVE)
+    lemonldap.workplaces[MMAUDET] = MMAUDET_DRIVE
+    return MMAUDET_DRIVE
+
+
 @asynccontextmanager
 async def running(
-    settings: Settings, lemonldap: FakeLemonLDAP, clock: FakeClock
+    settings: Settings,
+    lemonldap: FakeLemonLDAP,
+    clock: FakeClock,
+    cozy_stack: FakeCozyStack | None = None,
 ) -> AsyncIterator[AsyncClient]:
     """The broker, from its start to its stop."""
-    app = create_app(settings, lemonldap_transport=lemonldap.transport, clock=clock)
+    app = create_app(
+        settings,
+        lemonldap_transport=lemonldap.transport,
+        cozy_stack_transport=(cozy_stack or FakeCozyStack()).transport,
+        clock=clock,
+    )
     async with (
         LifespanManager(app) as manager,
         AsyncClient(transport=ASGITransport(app=manager.app), base_url=PUBLIC_BASE_URL) as client,
@@ -96,9 +120,9 @@ async def running(
 
 @pytest.fixture
 async def client(
-    settings: Settings, lemonldap: FakeLemonLDAP, clock: FakeClock
+    settings: Settings, lemonldap: FakeLemonLDAP, clock: FakeClock, cozy_stack: FakeCozyStack
 ) -> AsyncIterator[AsyncClient]:
-    async with running(settings, lemonldap, clock) as client:
+    async with running(settings, lemonldap, clock, cozy_stack) as client:
         yield client
 
 
@@ -107,6 +131,15 @@ async def consent(client: AsyncClient, lemonldap: FakeLemonLDAP, user: str) -> R
     client.cookies.clear()
     started = await client.get("/consent")
     return await client.get(lemonldap.sign_in(started.headers["location"], user))
+
+
+async def consent_with_drive(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, cozy_stack: FakeCozyStack, user: str
+) -> Response:
+    """The user consents, then accepts on their Drive instance, where the consent took them."""
+    to_drive = await consent(client, lemonldap, user)
+    assert to_drive.status_code == 302
+    return await client.get(cozy_stack.authorize(to_drive.headers["location"]))
 
 
 def as_agent_of(user: str) -> dict[str, str]:
