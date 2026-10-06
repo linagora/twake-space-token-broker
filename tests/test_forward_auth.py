@@ -9,16 +9,24 @@ from httpx import AsyncClient
 
 from tests.conftest import (
     ALICE,
+    DRIVE_INSTANCE_DOMAIN,
     MMAUDET,
     PUBLIC_BASE_URL,
     FakeClock,
     as_agent_of,
     consent,
+    consent_with_drive,
     database_dump,
     running,
 )
+from tests.fake_cozy_stack import FakeCozyStack
 from tests.fake_lemonldap import ACCESS_TOKEN_LIFETIME, FakeLemonLDAP
 from twake_space_token_broker.settings import Settings
+
+DRIVE = {"token": "drive"}
+"""The query of the forward-auth of a Drive route."""
+
+FILES = "io.cozy.files:GET,POST"
 
 
 def bearer(authorization: str) -> str:
@@ -357,3 +365,368 @@ async def test_a_delegation_kept_under_another_encryption_key_counts_as_expired(
 
     assert response.status_code == 401
     assert response.json()["code"] == "delegation_expired"
+
+
+async def test_a_drive_route_gets_the_owners_drive_token_and_instance(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, cozy_stack: FakeCozyStack, drive: str
+) -> None:
+    await consent_with_drive(client, lemonldap, cozy_stack, MMAUDET)
+
+    response = await client.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET))
+
+    assert response.status_code == 200
+    # LemonLDAP's token still names the user to the contract
+    assert lemonldap.owner_of(bearer(response.headers["authorization"])) == MMAUDET
+    assert cozy_stack.access_of(response.headers["x-twake-drive-token"]) == (drive, FILES)
+    assert response.headers["x-twake-drive-instance"] == drive
+
+
+async def test_each_owner_gets_their_own_drive_token_and_instance(
+    client: AsyncClient,
+    lemonldap: FakeLemonLDAP,
+    cozy_stack: FakeCozyStack,
+    clock: FakeClock,
+    drive: str,
+) -> None:
+    alice_drive = f"alice.{DRIVE_INSTANCE_DOMAIN}"
+    cozy_stack.create_instance(alice_drive)
+    lemonldap.workplaces[ALICE] = alice_drive
+    await consent_with_drive(client, lemonldap, cozy_stack, MMAUDET)
+    await consent_with_drive(client, lemonldap, cozy_stack, ALICE)
+
+    # With the tokens of the consents, then with tokens refreshed from what the broker stored
+    for _ in range(2):
+        mine = await client.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET))
+        hers = await client.get("/forward-auth", params=DRIVE, headers=as_agent_of(ALICE))
+
+        assert lemonldap.owner_of(bearer(mine.headers["authorization"])) == MMAUDET
+        assert cozy_stack.access_of(mine.headers["x-twake-drive-token"]) == (drive, FILES)
+        assert mine.headers["x-twake-drive-instance"] == drive
+        assert lemonldap.owner_of(bearer(hers.headers["authorization"])) == ALICE
+        assert cozy_stack.access_of(hers.headers["x-twake-drive-token"]) == (alice_drive, FILES)
+        assert hers.headers["x-twake-drive-instance"] == alice_drive
+        clock.advance(60)
+
+
+async def test_a_route_that_does_not_ask_for_drive_gets_no_drive_token(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, cozy_stack: FakeCozyStack, drive: str
+) -> None:
+    await consent_with_drive(client, lemonldap, cozy_stack, MMAUDET)
+
+    response = await client.get("/forward-auth", headers=as_agent_of(MMAUDET))
+
+    assert response.status_code == 200
+    assert "x-twake-drive-token" not in response.headers
+    assert "x-twake-drive-instance" not in response.headers
+
+
+async def test_a_drive_route_of_an_owner_who_never_accepted_on_their_instance_gets_the_link(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, cozy_stack: FakeCozyStack, drive: str
+) -> None:
+    """LemonLDAP names their instance, so a new consent would let the broker in."""
+    assert (await consent(client, lemonldap, MMAUDET)).status_code == 302
+
+    response = await client.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET))
+
+    assert response.status_code == 401
+    assert response.headers["content-type"] == "application/problem+json"
+    assert response.json() == {
+        "type": "urn:twake:problem:delegation_missing",
+        "title": "Delegation missing",
+        "status": 401,
+        "detail": "The user has not let their agent act for them yet: they must open the consent"
+        " link.",
+        "code": "delegation_missing",
+        "consent_url": f"{PUBLIC_BASE_URL}/consent",
+    }
+
+
+DRIVE_INSTANCE_UNKNOWN = {
+    "type": "urn:twake:problem:drive_instance_unknown",
+    "title": "Drive instance unknown",
+    "status": 404,
+    "detail": "No Drive instance is known for the user: their agent cannot act in Drive, and a"
+    " new consent would not change it.",
+    "code": "drive_instance_unknown",
+}
+"""Without the consent link, which would only take the owner round in circles."""
+
+
+@pytest.mark.parametrize("named", [None, "mmaudet.elsewhere.test"], ids=["none", "elsewhere"])
+async def test_a_drive_route_of_an_owner_without_a_drive_instance_gets_no_consent_link(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, named: str | None
+) -> None:
+    if named is not None:
+        lemonldap.workplaces[MMAUDET] = named
+    await consent(client, lemonldap, MMAUDET)
+
+    response = await client.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET))
+
+    assert response.status_code == 404
+    assert response.headers["content-type"] == "application/problem+json"
+    assert response.json() == DRIVE_INSTANCE_UNKNOWN
+
+
+async def test_a_drive_route_while_drive_is_off_gets_no_consent_link(
+    settings: Settings,
+    lemonldap: FakeLemonLDAP,
+    cozy_stack: FakeCozyStack,
+    clock: FakeClock,
+    drive: str,
+) -> None:
+    async with running(
+        replace(settings, drive_instance_domain=None), lemonldap, clock, cozy_stack
+    ) as broker:
+        await consent(broker, lemonldap, MMAUDET)
+        response = await broker.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET))
+
+    assert response.json() == DRIVE_INSTANCE_UNKNOWN
+
+
+async def test_a_drive_route_whose_instance_lemonldap_cannot_name_is_a_bad_gateway(
+    client: AsyncClient, lemonldap: FakeLemonLDAP
+) -> None:
+    await consent(client, lemonldap, MMAUDET)
+    lemonldap.userinfo_outage = True
+
+    response = await client.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET))
+
+    assert response.status_code == 502
+    assert response.json()["code"] == "lemonldap_unavailable"
+
+
+async def test_a_drive_access_token_is_reused_for_a_minute(
+    client: AsyncClient,
+    lemonldap: FakeLemonLDAP,
+    cozy_stack: FakeCozyStack,
+    clock: FakeClock,
+    drive: str,
+) -> None:
+    await consent_with_drive(client, lemonldap, cozy_stack, MMAUDET)
+    first = await client.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET))
+
+    clock.advance(59)
+    second = await client.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET))
+
+    assert second.headers["x-twake-drive-token"] == first.headers["x-twake-drive-token"]
+
+
+async def test_a_drive_access_token_is_refreshed_after_a_minute(
+    client: AsyncClient,
+    lemonldap: FakeLemonLDAP,
+    cozy_stack: FakeCozyStack,
+    clock: FakeClock,
+    drive: str,
+) -> None:
+    await consent_with_drive(client, lemonldap, cozy_stack, MMAUDET)
+    first = await client.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET))
+
+    clock.advance(60)
+    second = await client.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET))
+
+    refreshed = second.headers["x-twake-drive-token"]
+    assert refreshed != first.headers["x-twake-drive-token"]
+    assert cozy_stack.access_of(refreshed) == (drive, FILES)
+
+
+async def test_a_drive_delegation_the_owner_removed_from_their_instance_is_refused(
+    client: AsyncClient,
+    lemonldap: FakeLemonLDAP,
+    cozy_stack: FakeCozyStack,
+    clock: FakeClock,
+    drive: str,
+) -> None:
+    await consent_with_drive(client, lemonldap, cozy_stack, MMAUDET)
+    cozy_stack.remove_clients(drive)
+
+    clock.advance(60)
+    response = await client.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET))
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "delegation_expired"
+    assert response.json()["consent_url"] == f"{PUBLIC_BASE_URL}/consent"
+
+
+async def test_a_drive_route_of_an_owner_whose_lemonldap_delegation_ended_is_refused(
+    client: AsyncClient,
+    lemonldap: FakeLemonLDAP,
+    cozy_stack: FakeCozyStack,
+    clock: FakeClock,
+    drive: str,
+) -> None:
+    await consent_with_drive(client, lemonldap, cozy_stack, MMAUDET)
+    lemonldap.end_offline_session(MMAUDET)
+
+    clock.advance(60)
+    response = await client.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET))
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "delegation_expired"
+
+
+@pytest.mark.parametrize("outage", ["error page", "unreachable"])
+async def test_a_drive_instance_failing_to_refresh_is_a_bad_gateway(
+    client: AsyncClient,
+    lemonldap: FakeLemonLDAP,
+    cozy_stack: FakeCozyStack,
+    clock: FakeClock,
+    drive: str,
+    outage: Literal["error page", "unreachable"],
+) -> None:
+    await consent_with_drive(client, lemonldap, cozy_stack, MMAUDET)
+    clock.advance(60)
+    cozy_stack.outage = outage
+
+    response = await client.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET))
+
+    assert response.status_code == 502
+    assert response.headers["content-type"] == "application/problem+json"
+    assert response.json() == {
+        "type": "urn:twake:problem:drive_unavailable",
+        "title": "Drive unavailable",
+        "status": 502,
+        "detail": "The owner's Drive instance did not answer the token request: try again later.",
+        "code": "drive_unavailable",
+    }
+
+
+async def test_a_refresh_token_the_drive_instance_rotates_serves_the_next_refresh(
+    client: AsyncClient,
+    lemonldap: FakeLemonLDAP,
+    cozy_stack: FakeCozyStack,
+    clock: FakeClock,
+    drive: str,
+) -> None:
+    cozy_stack.rotates_refresh_tokens = True
+    await consent_with_drive(client, lemonldap, cozy_stack, MMAUDET)
+    clock.advance(60)
+    await client.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET))
+
+    clock.advance(60)
+    response = await client.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET))
+
+    assert response.status_code == 200
+    assert cozy_stack.access_of(response.headers["x-twake-drive-token"]) == (drive, FILES)
+
+
+async def test_simultaneous_drive_calls_of_an_agent_share_one_refresh(
+    client: AsyncClient,
+    lemonldap: FakeLemonLDAP,
+    cozy_stack: FakeCozyStack,
+    clock: FakeClock,
+    drive: str,
+) -> None:
+    cozy_stack.rotates_refresh_tokens = True
+    await consent_with_drive(client, lemonldap, cozy_stack, MMAUDET)
+    clock.advance(60)
+
+    responses = await asyncio.gather(
+        *(client.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET)) for _ in range(3))
+    )
+
+    assert [response.status_code for response in responses] == [200, 200, 200]
+    assert len({response.headers["x-twake-drive-token"] for response in responses}) == 1
+
+
+async def test_a_token_the_broker_does_not_give_is_an_invalid_request(
+    client: AsyncClient, lemonldap: FakeLemonLDAP
+) -> None:
+    """A mistyped query of a route must not leave its contract without the token it needs."""
+    await consent(client, lemonldap, MMAUDET)
+
+    response = await client.get(
+        "/forward-auth", params={"token": "drvie"}, headers=as_agent_of(MMAUDET)
+    )
+
+    assert response.status_code == 400
+    assert response.headers["content-type"] == "application/problem+json"
+    assert response.json() == {
+        "type": "urn:twake:problem:unknown_token",
+        "title": "Unknown token",
+        "status": 400,
+        "detail": "The token query parameter can only ask for drive.",
+        "code": "unknown_token",
+    }
+
+
+async def test_consenting_again_without_a_drive_instance_drops_the_drive_delegation(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, cozy_stack: FakeCozyStack, drive: str
+) -> None:
+    await consent_with_drive(client, lemonldap, cozy_stack, MMAUDET)
+    del lemonldap.workplaces[MMAUDET]
+
+    await consent(client, lemonldap, MMAUDET)
+
+    response = await client.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET))
+    assert response.json()["code"] == "drive_instance_unknown"
+    assert cozy_stack.clients_on(drive) == []
+
+
+async def test_a_refresh_running_while_the_owner_consents_again_puts_no_drive_token_back(
+    client: AsyncClient,
+    lemonldap: FakeLemonLDAP,
+    cozy_stack: FakeCozyStack,
+    clock: FakeClock,
+    drive: str,
+) -> None:
+    await consent_with_drive(client, lemonldap, cozy_stack, MMAUDET)
+    clock.advance(60)
+    cozy_stack.hold_token_answers()
+    refreshing = asyncio.create_task(
+        client.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET))
+    )
+    await cozy_stack.token_answer_held.wait()
+    del lemonldap.workplaces[MMAUDET]
+
+    consenting = asyncio.create_task(consent(client, lemonldap, MMAUDET))
+    # The new consent waits for the refresh in progress, whose answer is still on its way
+    await asyncio.wait({consenting}, timeout=0.5)
+    cozy_stack.release_token_answers()
+    await asyncio.gather(refreshing, consenting)
+
+    response = await client.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET))
+    assert response.status_code == 404
+    assert response.json()["code"] == "drive_instance_unknown"
+
+
+async def test_consenting_again_leaves_one_client_of_the_broker_on_the_drive_instance(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, cozy_stack: FakeCozyStack, drive: str
+) -> None:
+    await consent_with_drive(client, lemonldap, cozy_stack, MMAUDET)
+
+    await consent_with_drive(client, lemonldap, cozy_stack, MMAUDET)
+
+    assert len(cozy_stack.clients_on(drive)) == 1
+    response = await client.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET))
+    assert cozy_stack.access_of(response.headers["x-twake-drive-token"]) == (drive, FILES)
+
+
+async def test_consenting_again_while_the_drive_instance_is_unreachable_drops_drive(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, cozy_stack: FakeCozyStack, drive: str
+) -> None:
+    """A new consent replaces the whole delegation, even when the instance cannot be told."""
+    await consent_with_drive(client, lemonldap, cozy_stack, MMAUDET)
+    cozy_stack.outage = "unreachable"
+
+    await consent(client, lemonldap, MMAUDET)
+
+    response = await client.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET))
+    assert response.json()["code"] == "delegation_missing"
+
+
+async def test_consenting_again_under_another_encryption_key_replaces_the_drive_delegation(
+    settings: Settings,
+    lemonldap: FakeLemonLDAP,
+    cozy_stack: FakeCozyStack,
+    clock: FakeClock,
+    drive: str,
+) -> None:
+    async with running(settings, lemonldap, clock, cozy_stack) as broker:
+        await consent_with_drive(broker, lemonldap, cozy_stack, MMAUDET)
+
+    with_another_key = replace(settings, encryption_key=bytes(32))
+    async with running(with_another_key, lemonldap, clock, cozy_stack) as broker:
+        await consent_with_drive(broker, lemonldap, cozy_stack, MMAUDET)
+        response = await broker.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET))
+
+    assert cozy_stack.access_of(response.headers["x-twake-drive-token"]) == (drive, FILES)

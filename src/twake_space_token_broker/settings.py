@@ -1,5 +1,6 @@
 import base64
 import binascii
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Self
@@ -9,6 +10,9 @@ KEY_SIZE = 32
 
 TOKEN_REUSE_SECONDS = 60
 """The default of Settings.token_reuse_seconds."""
+
+LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+"""One label of a domain name, in lower case."""
 
 
 @dataclass(frozen=True)
@@ -26,6 +30,12 @@ class Settings:
     """Seconds an access token is handed out before LemonLDAP is asked again.
 
     It bounds how long a revoked delegation still gets tokens, as an access token lasts hours.
+    """
+    drive_instance_domain: str | None = None
+    """The domain of the users' Drive instances, such as twake.example.com, or None for no Drive.
+
+    The broker lets itself in only on an instance right under it, <name>.<domain>, since it calls
+    the host LemonLDAP names.
     """
 
     @property
@@ -49,6 +59,7 @@ class Settings:
             token_reuse_seconds=_reuse_seconds(
                 environ.get("TOKEN_REUSE_SECONDS", str(TOKEN_REUSE_SECONDS))
             ),
+            drive_instance_domain=_domain(environ.get("DRIVE_INSTANCE_DOMAIN", "")),
         )
 
 
@@ -56,6 +67,15 @@ def _reuse_seconds(text: str) -> int:
     if not text.isdecimal():
         raise ValueError("TOKEN_REUSE_SECONDS must be a whole number of seconds")
     return int(text)
+
+
+def _domain(text: str) -> str | None:
+    domain = text.strip().lower()
+    if not domain:
+        return None
+    if not re.fullmatch(rf"{LABEL}(?:\.{LABEL})+", domain):
+        raise ValueError("DRIVE_INSTANCE_DOMAIN must be a domain name, such as twake.example.com")
+    return domain
 
 
 def _key(encoded: str) -> bytes:
