@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from typing import Literal
 
 import pytest
 from httpx import URL, AsyncClient, Response
@@ -13,6 +14,7 @@ from tests.conftest import (
     consent,
     consent_with_drive,
     database_dump,
+    remove_delegation,
 )
 from tests.fake_cozy_stack import FakeCozyStack
 from tests.fake_lemonldap import FakeLemonLDAP
@@ -22,6 +24,14 @@ def assert_consent_failed(response: Response, status_code: int = 400) -> None:
     """The user sees why, in French, with a link to start over."""
     assert response.status_code == status_code
     assert response.headers["content-type"].startswith("text/html")
+    assert 'href="/consent"' in response.text
+
+
+def assert_authorized_without_drive(response: Response, status_code: int) -> None:
+    """The user learns that their agent may act for them, though not in Drive, and may retry."""
+    assert response.status_code == status_code
+    assert response.headers["content-type"].startswith("text/html")
+    assert "sauf dans Drive" in response.text
     assert 'href="/consent"' in response.text
 
 
@@ -232,3 +242,87 @@ async def test_a_drive_instance_lemonldap_cannot_name_leaves_drive_out_of_the_co
     assert response.status_code == 200
     assert "Drive n&#x27;est pas disponible" in response.text
     assert cozy_stack.clients_on(drive) == []
+
+
+async def test_an_owner_who_declines_on_their_drive_instance_keeps_the_rest_of_the_consent(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, cozy_stack: FakeCozyStack, drive: str
+) -> None:
+    to_drive = await consent(client, lemonldap, MMAUDET)
+
+    response = await client.get(cozy_stack.refuse(to_drive.headers["location"]))
+
+    assert_authorized_without_drive(response, 200)
+    authorized = await client.get("/forward-auth", headers=as_agent_of(MMAUDET))
+    assert authorized.status_code == 200
+
+
+@pytest.mark.parametrize("outage", ["error page", "unreachable"])
+async def test_a_drive_instance_that_cannot_register_the_broker_is_a_bad_gateway(
+    client: AsyncClient,
+    lemonldap: FakeLemonLDAP,
+    cozy_stack: FakeCozyStack,
+    drive: str,
+    outage: Literal["error page", "unreachable"],
+) -> None:
+    cozy_stack.outage = outage
+
+    response = await consent(client, lemonldap, MMAUDET)
+
+    assert_authorized_without_drive(response, 502)
+    authorized = await client.get("/forward-auth", headers=as_agent_of(MMAUDET))
+    assert authorized.status_code == 200
+
+
+async def test_a_drive_callback_whose_state_differs_from_the_consent_in_progress_is_refused(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, cozy_stack: FakeCozyStack, drive: str
+) -> None:
+    to_drive = await consent(client, lemonldap, MMAUDET)
+    callback = URL(cozy_stack.authorize(to_drive.headers["location"]))
+
+    response = await client.get(callback.copy_set_param("state", "forged"))
+
+    assert_consent_failed(response)
+    unknown = await client.get(
+        "/forward-auth", params={"token": "drive"}, headers=as_agent_of(MMAUDET)
+    )
+    assert unknown.json()["code"] == "delegation_missing"
+
+
+async def test_a_code_the_drive_instance_refuses_is_refused(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, cozy_stack: FakeCozyStack, drive: str
+) -> None:
+    to_drive = await consent(client, lemonldap, MMAUDET)
+    callback = URL(cozy_stack.authorize(to_drive.headers["location"]))
+
+    response = await client.get(callback.copy_set_param("code", "drive-code-unknown"))
+
+    assert_authorized_without_drive(response, 400)
+
+
+async def test_a_drive_instance_failing_to_complete_the_consent_is_a_bad_gateway(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, cozy_stack: FakeCozyStack, drive: str
+) -> None:
+    to_drive = await consent(client, lemonldap, MMAUDET)
+    callback = cozy_stack.authorize(to_drive.headers["location"])
+    cozy_stack.outage = "unreachable"
+
+    response = await client.get(callback)
+
+    assert_authorized_without_drive(response, 502)
+
+
+async def test_a_drive_authorization_whose_delegation_was_removed_meanwhile_is_refused(
+    client: AsyncClient,
+    lemonldap: FakeLemonLDAP,
+    cozy_stack: FakeCozyStack,
+    drive: str,
+    database_url: str,
+) -> None:
+    to_drive = await consent(client, lemonldap, MMAUDET)
+    callback = cozy_stack.authorize(to_drive.headers["location"])
+    await remove_delegation(database_url, MMAUDET)
+
+    response = await client.get(callback)
+
+    assert_consent_failed(response)
+    assert await database_dump(database_url) == ""

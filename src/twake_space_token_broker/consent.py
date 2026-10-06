@@ -13,6 +13,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Cookie
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
+from twake_space_token_broker.cozy_stack import InstanceRefused, InstanceUnavailable
 from twake_space_token_broker.drive import DriveTokens
 from twake_space_token_broker.keys import Signer
 from twake_space_token_broker.lemonldap import (
@@ -22,7 +23,7 @@ from twake_space_token_broker.lemonldap import (
     OfflineAccessDenied,
     SignedIn,
 )
-from twake_space_token_broker.tokens import AccessTokens
+from twake_space_token_broker.tokens import AccessTokens, DelegationMissing
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,8 @@ COOKIE_LIFETIME = 600
 
 DRIVE_STEP = "drive"
 """The step of a consent in progress whose user is on their Drive instance."""
+
+UNAVAILABLE = "Votre instance Drive n'a pas pu terminer l'autorisation."
 
 
 def _page(title: str, message: str, *, retry: bool = False, status_code: int = 200) -> HTMLResponse:
@@ -67,6 +70,23 @@ def _authorized(message: str) -> HTMLResponse:
     response = _page("Votre assistant est autorisé", f"{message} Vous pouvez fermer cette page.")
     response.delete_cookie(COOKIE)
     return response
+
+
+def _without_drive(user: str, reason: str, *, status_code: int) -> HTMLResponse:
+    """The user's agent may act for them, but not in Drive: they learn why, and may retry."""
+    response = _page(
+        "Votre assistant est autorisé, sauf dans Drive",
+        f"Votre assistant Twake Space peut désormais agir pour {user}, mais pas dans Drive."
+        f" {reason}",
+        retry=True,
+        status_code=status_code,
+    )
+    response.delete_cookie(COOKIE)
+    return response
+
+
+def _same_state(flow: dict[str, Any], state: str | None) -> bool:
+    return secrets.compare_digest(flow["state"].encode(), (state or "").encode())
 
 
 def router(
@@ -112,10 +132,10 @@ def router(
             return _refused("Aucune autorisation n'est en cours dans ce navigateur.")
         if clock() >= flow["expires"]:
             return _refused("L'autorisation a expiré.")
-        if not secrets.compare_digest(flow["state"].encode(), (state or "").encode()):
-            return _refused("Cette page ne correspond pas à l'autorisation en cours.")
         if flow.get("step") == DRIVE_STEP:
-            return await drive_callback(flow["user"], code, flow["verifier"])
+            return await drive_callback(flow, code, state)
+        if not _same_state(flow, state):
+            return _refused("Cette page ne correspond pas à l'autorisation en cours.")
         if code is None:
             return _refused("LemonLDAP n'a pas accordé l'autorisation.")
         try:
@@ -150,9 +170,15 @@ def router(
             )
         state = secrets.token_urlsafe(32)
         verifier = secrets.token_urlsafe(48)
-        authorize_url = await drive_tokens.request(
-            signed_in.user, instance, state=state, verifier=verifier
-        )
+        try:
+            authorize_url = await drive_tokens.request(
+                signed_in.user, instance, state=state, verifier=verifier
+            )
+        except InstanceUnavailable as unavailable:
+            logger.warning(
+                "The Drive instance of %s took no client: %s", signed_in.user, unavailable
+            )
+            return _without_drive(signed_in.user, UNAVAILABLE, status_code=502)
         response = RedirectResponse(authorize_url, status_code=302)
         remember(
             response,
@@ -160,11 +186,28 @@ def router(
         )
         return response
 
-    async def drive_callback(user: str, code: str | None, verifier: str) -> Response:
+    async def drive_callback(flow: dict[str, Any], code: str | None, state: str | None) -> Response:
         """Where the user's Drive instance sends them back."""
+        user = flow["user"]
         if code is None:
-            return _refused("Votre instance Drive n'a pas accordé l'autorisation.")
-        await drive_tokens.consented(user, code, verifier)
+            # The instance's page links back with no state when the user declines: the answer
+            # changes nothing the broker keeps
+            return _without_drive(
+                user, "Vous n'avez pas accordé l'accès à vos fichiers.", status_code=200
+            )
+        if not _same_state(flow, state):
+            return _refused("Cette page ne correspond pas à l'autorisation en cours.")
+        try:
+            await drive_tokens.consented(user, code, flow["verifier"])
+        except DelegationMissing:
+            return _refused("Cette autorisation n'est plus en cours.")
+        except InstanceRefused:
+            return _without_drive(
+                user, "Votre instance Drive a refusé le code d'autorisation.", status_code=400
+            )
+        except InstanceUnavailable as unavailable:
+            logger.warning("The Drive instance of %s completed no consent: %s", user, unavailable)
+            return _without_drive(user, UNAVAILABLE, status_code=502)
         return _authorized(
             f"Votre assistant Twake Space peut désormais agir pour {user}, y compris dans Drive."
         )

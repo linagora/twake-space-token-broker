@@ -147,6 +147,12 @@ def as_agent_of(user: str) -> dict[str, str]:
     return {"X-Twake-User-Email": user}
 
 
+async def remove_delegation(database_url: str, user: str) -> None:
+    """An operator deletes the user's delegation from the broker's database."""
+    async with await psycopg.AsyncConnection.connect(database_url) as connection:
+        await connection.execute("DELETE FROM delegations WHERE user_email = %s", (user,))
+
+
 async def database_dump(database_url: str) -> str:
     """Every row of every table, as PostgreSQL prints them."""
     async with await psycopg.AsyncConnection.connect(database_url) as connection:
