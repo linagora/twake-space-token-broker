@@ -25,7 +25,8 @@ Twake Drive accepts only tokens of the owner's own instance, a cozy-stack. The s
 - The broker registers an OAuth client named `Assistant Twake Space` on that instance, by dynamic client registration (`POST /auth/register`), and sends the user to the instance's consent page for `io.cozy.files:GET,POST`, reading and creating files, with PKCE (S256). The client is listed among the applications connected to the instance, where the user can remove it.
 - The instance sends the user back to `/callback` too, which tells the two steps apart by the signed cookie of the consent in progress. The callback checks the state, exchanges the code with the client's secret, and stores the instance's refresh token with the client.
 - The user thus consents once, through the same link: they need not open anything else.
-- When LemonLDAP names no instance, cannot answer, or names something other than a host name, the consent completes for LemonLDAP alone and the page says that Drive is not available. The consent never fails for Drive.
+- The broker calls the host LemonLDAP names, so it accepts only an instance right under `DRIVE_INSTANCE_DOMAIN`, `<name>.<domain>`: an address, a service of the cluster or a host of another domain counts as no instance, and logs a warning. Without `DRIVE_INSTANCE_DOMAIN`, Drive is off.
+- When LemonLDAP names no such instance, or cannot answer, the consent completes for LemonLDAP alone and the page says that Drive is not available. The consent never fails for Drive.
 - When the user declines on their instance, or the instance fails, the page says that the agent may act for them except in Drive, and why, with the link to start over. LemonLDAP's part of the consent stays.
 - Consenting again replaces the Drive delegation as well: the broker removes its earlier client from the instance, which voids that client's tokens, and Drive comes back only if the user lets the broker in again.
 
@@ -81,6 +82,7 @@ The key of the tokens and the key of the consent cookie are both derived from `E
 | `ENCRYPTION_KEY` | at least 32 random bytes, base64 encoded, such as from `openssl rand -base64 32` |
 | `PUBLIC_BASE_URL` | where users reach the broker, such as `https://agent-consent.dev.twake.lin-saas.com` |
 | `TOKEN_REUSE_SECONDS` | seconds an access token is handed out before LemonLDAP, or the Drive instance, is asked again, `60` by default: a revoked delegation still gets tokens for that long at most |
+| `DRIVE_INSTANCE_DOMAIN` | the domain of the users' Drive instances, such as `dev.twake.lin-saas.com`: the broker lets itself in only on `<name>.<domain>`. Unset by default, which turns Drive off |
 
 ```sh
 DATABASE_URL=postgresql://broker:secret@localhost:5432/broker \
@@ -96,7 +98,7 @@ To deploy it:
 
 - register `<PUBLIC_BASE_URL>/callback` as a redirect of the LemonLDAP client;
 - publish only `/consent` and `/callback` on the public host, and let only APISIX reach `/forward-auth`;
-- for Drive, have LemonLDAP release `workplaceFqdn` in the client's userinfo, and let the broker reach the users' Drive instances over HTTPS at those hosts;
+- for Drive, set `DRIVE_INSTANCE_DOMAIN`, have LemonLDAP release `workplaceFqdn` in the client's userinfo, and let the broker reach the users' Drive instances over HTTPS;
 - run a single replica, since the access tokens and the refresh lock are kept in memory.
 
 ## Test

@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from dataclasses import replace
 from typing import Literal
 
 import pytest
@@ -8,6 +8,7 @@ from tests.conftest import (
     CLIENT_ID,
     ISSUER,
     MMAUDET,
+    MMAUDET_DRIVE,
     PUBLIC_BASE_URL,
     FakeClock,
     as_agent_of,
@@ -15,9 +16,11 @@ from tests.conftest import (
     consent_with_drive,
     database_dump,
     remove_delegation,
+    running,
 )
 from tests.fake_cozy_stack import FakeCozyStack
 from tests.fake_lemonldap import FakeLemonLDAP
+from twake_space_token_broker.settings import Settings
 
 
 def assert_consent_failed(response: Response, status_code: int = 400) -> None:
@@ -232,26 +235,59 @@ async def test_a_consent_without_a_drive_instance_completes_for_lemonldap_alone(
     assert authorized.status_code == 200
 
 
-def userinfo_failing(lemonldap: FakeLemonLDAP) -> None:
+async def test_a_consent_completes_for_lemonldap_alone_when_its_userinfo_fails(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, cozy_stack: FakeCozyStack, drive: str
+) -> None:
+    """The consent never fails for Drive: an agent may need LemonLDAP's token alone."""
     lemonldap.userinfo_outage = True
 
+    response = await consent(client, lemonldap, MMAUDET)
 
-def not_a_host_name(lemonldap: FakeLemonLDAP) -> None:
-    lemonldap.workplaces[MMAUDET] = f"https://{lemonldap.workplaces[MMAUDET]}/"
+    assert response.status_code == 200
+    assert "Drive n&#x27;est pas disponible" in response.text
+    assert cozy_stack.clients_on(drive) == []
 
 
-@pytest.mark.parametrize("fail", [userinfo_failing, not_a_host_name])
-async def test_a_drive_instance_lemonldap_cannot_name_leaves_drive_out_of_the_consent(
+@pytest.mark.parametrize(
+    "named",
+    [
+        f"https://{MMAUDET_DRIVE}/",
+        "mmaudet.elsewhere.test",
+        "10.0.0.1",
+        "kubernetes.default.svc",
+        f"drive.{MMAUDET_DRIVE}",
+    ],
+    ids=["a URL", "another domain", "an IP address", "a cluster service", "below an instance"],
+)
+async def test_a_workplace_that_is_no_instance_of_the_domain_leaves_drive_out_of_the_consent(
     client: AsyncClient,
     lemonldap: FakeLemonLDAP,
     cozy_stack: FakeCozyStack,
     drive: str,
-    fail: Callable[[FakeLemonLDAP], None],
+    named: str,
 ) -> None:
-    """The consent never fails for Drive: an agent may need LemonLDAP's token alone."""
-    fail(lemonldap)
+    """The broker calls the host LemonLDAP names: only an instance of the domain may do."""
+    for host in ("mmaudet.elsewhere.test", "10.0.0.1", "kubernetes.default.svc", f"drive.{drive}"):
+        cozy_stack.create_instance(host)
+    lemonldap.workplaces[MMAUDET] = named
 
     response = await consent(client, lemonldap, MMAUDET)
+
+    assert response.status_code == 200
+    assert "Drive n&#x27;est pas disponible" in response.text
+
+
+async def test_drive_is_off_without_a_domain_of_drive_instances(
+    settings: Settings,
+    lemonldap: FakeLemonLDAP,
+    cozy_stack: FakeCozyStack,
+    clock: FakeClock,
+    drive: str,
+) -> None:
+    async with running(
+        replace(settings, drive_instance_domain=None), lemonldap, clock, cozy_stack
+    ) as broker:
+        response = await consent(broker, lemonldap, MMAUDET)
 
     assert response.status_code == 200
     assert "Drive n&#x27;est pas disponible" in response.text

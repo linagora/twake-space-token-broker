@@ -1,6 +1,7 @@
 """LemonLDAP, the OpenID Connect provider, as the broker's own client sees it."""
 
 import json
+import logging
 import re
 from collections.abc import Callable, Set
 from dataclasses import dataclass
@@ -10,15 +11,14 @@ from urllib.parse import urlencode
 import httpx
 
 from twake_space_token_broker import base64url, pkce
-from twake_space_token_broker.settings import Settings
+from twake_space_token_broker.settings import LABEL, Settings
+
+logger = logging.getLogger(__name__)
 
 SCOPE = "openid email offline_access"
 
 DRIVE_INSTANCE_CLAIM = "workplaceFqdn"
 """The claim naming the host of the user's Drive instance, which the directory keeps."""
-
-_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
-_HOST = re.compile(rf"{_LABEL}(?:\.{_LABEL})+")
 
 
 class GrantRefused(Exception):
@@ -130,7 +130,11 @@ class LemonLDAP:
         return SignedIn(user=user, refresh_token=tokens.refresh_token, tokens=tokens)
 
     async def drive_instance(self, access_token: str) -> str | None:
-        """The host of the user's Drive instance, if LemonLDAP releases it in their userinfo."""
+        """The host of the user's Drive instance, if LemonLDAP names in their userinfo one under
+        the domain of the users' instances."""
+        domain = self._settings.drive_instance_domain
+        if domain is None:
+            return None
         try:
             response = await self._http.get(
                 self._endpoint("userinfo"), headers={"Authorization": f"Bearer {access_token}"}
@@ -143,9 +147,13 @@ class LemonLDAP:
         host = body.get(DRIVE_INSTANCE_CLAIM)
         if host is None:
             return None
-        # The broker calls the instance at this host: a URL or a path must never get through
-        if not isinstance(host, str) or not _HOST.fullmatch(host.lower()):
-            raise LemonLDAPUnavailable(f"a {DRIVE_INSTANCE_CLAIM} that is no host name")
+        # The broker calls the instance at this host: nothing but one of the users' instances,
+        # never an address, a service of the cluster or a host elsewhere
+        if not isinstance(host, str) or not re.fullmatch(
+            rf"{LABEL}\.{re.escape(domain)}", host.lower()
+        ):
+            logger.warning("LemonLDAP names a Drive instance outside %s: %r", domain, host)
+            return None
         return host.lower()
 
     async def refresh(self, refresh_token: str) -> Tokens:

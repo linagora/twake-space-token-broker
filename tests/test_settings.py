@@ -71,3 +71,29 @@ def test_a_token_reuse_that_is_not_a_whole_number_of_seconds_is_refused(
 
     with pytest.raises(ValueError, match="TOKEN_REUSE_SECONDS"):
         create_app_from_env()
+
+
+def test_drive_is_off_by_default(environment: pytest.MonkeyPatch) -> None:
+    assert Settings.from_env(os.environ).drive_instance_domain is None
+
+
+def test_the_environment_sets_the_domain_of_the_drive_instances(
+    environment: pytest.MonkeyPatch,
+) -> None:
+    environment.setenv("DRIVE_INSTANCE_DOMAIN", "Twake.Example.Test")
+
+    assert Settings.from_env(os.environ).drive_instance_domain == "twake.example.test"
+
+
+@pytest.mark.parametrize(
+    "domain",
+    ["https://twake.example.test", "twake", "*.twake.example.test"],
+    ids=["a URL", "a single label", "a wildcard"],
+)
+def test_a_drive_instance_domain_that_is_no_domain_name_is_refused(
+    environment: pytest.MonkeyPatch, domain: str
+) -> None:
+    environment.setenv("DRIVE_INSTANCE_DOMAIN", domain)
+
+    with pytest.raises(ValueError, match="DRIVE_INSTANCE_DOMAIN"):
+        create_app_from_env()

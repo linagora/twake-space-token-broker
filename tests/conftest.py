@@ -22,7 +22,9 @@ CLIENT_SECRET = "client-secret-for-tests"
 
 MMAUDET = "mmaudet@example.test"
 ALICE = "alice@example.test"
-MMAUDET_DRIVE = "mmaudet.twake.example.test"
+DRIVE_INSTANCE_DOMAIN = "twake.example.test"
+"""The domain of the users' Drive instances."""
+MMAUDET_DRIVE = f"mmaudet.{DRIVE_INSTANCE_DOMAIN}"
 """The host of MMAUDET's Drive instance."""
 
 
@@ -66,6 +68,7 @@ def settings(database_url: str) -> Settings:
         client_secret=CLIENT_SECRET,
         encryption_key=bytes(range(32)),
         public_base_url=PUBLIC_BASE_URL,
+        drive_instance_domain=DRIVE_INSTANCE_DOMAIN,
     )
 
 
