@@ -67,8 +67,13 @@ def settings(database_url: str) -> Settings:
 
 
 @pytest.fixture
-def lemonldap() -> FakeLemonLDAP:
-    return FakeLemonLDAP(issuer=ISSUER, client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
+def lemonldap(clock: FakeClock) -> FakeLemonLDAP:
+    return FakeLemonLDAP(
+        issuer=ISSUER,
+        client_id=CLIENT_ID,
+        client_secret=CLIENT_SECRET,
+        let_time_pass=clock.advance,
+    )
 
 
 @pytest.fixture

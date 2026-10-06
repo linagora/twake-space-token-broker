@@ -4,6 +4,7 @@ import base64
 import hashlib
 import itertools
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import parse_qsl
@@ -30,12 +31,22 @@ def _error(status: int, error: str) -> httpx.Response:
 
 
 class FakeLemonLDAP:
-    def __init__(self, *, issuer: str, client_id: str, client_secret: str) -> None:
+    def __init__(
+        self,
+        *,
+        issuer: str,
+        client_id: str,
+        client_secret: str,
+        let_time_pass: Callable[[float], None],
+    ) -> None:
         self._issuer = issuer
         self._client_id = client_id
         self._credentials = (
             "Basic " + base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
         )
+        self._let_time_pass = let_time_pass
+        self.latency = 0.0
+        """Seconds each token request takes, which pass on the broker's clock."""
         self._serial = itertools.count(1)
         self._codes: dict[str, _Code] = {}
         self._refresh_tokens: dict[str, str] = {}
@@ -79,6 +90,7 @@ class FakeLemonLDAP:
     def _token_endpoint(self, request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
         assert str(request.url) == f"{self._issuer}oauth2/token"
+        self._let_time_pass(self.latency)
         if self.outage == "unreachable":
             raise httpx.ConnectError("Connection refused", request=request)
         if self.outage == "error page":

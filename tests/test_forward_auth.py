@@ -36,26 +36,72 @@ async def test_an_agent_gets_an_access_token_of_its_owner_only(
     assert lemonldap.owner_of(bearer(response.headers["authorization"])) == MMAUDET
 
 
-async def test_an_access_token_is_reused_until_five_minutes_before_it_expires(
+async def test_an_access_token_is_reused_for_a_minute(
     client: AsyncClient, lemonldap: FakeLemonLDAP, clock: FakeClock
 ) -> None:
     await consent(client, lemonldap, MMAUDET)
     first = await client.get("/forward-auth", headers=as_agent_of(MMAUDET))
 
-    clock.advance(ACCESS_TOKEN_LIFETIME - 300 - 1)
+    clock.advance(59)
     second = await client.get("/forward-auth", headers=as_agent_of(MMAUDET))
 
     assert second.headers["authorization"] == first.headers["authorization"]
 
 
-async def test_an_access_token_is_refreshed_five_minutes_before_it_expires(
+async def test_a_revoked_delegation_is_refused_after_a_minute(
     client: AsyncClient, lemonldap: FakeLemonLDAP, clock: FakeClock
 ) -> None:
+    """LemonLDAP's access tokens last 10 hours: the broker must ask LemonLDAP again sooner."""
     await consent(client, lemonldap, MMAUDET)
+    await client.get("/forward-auth", headers=as_agent_of(MMAUDET))
+    lemonldap.end_offline_session(MMAUDET)
+
+    clock.advance(60)
+    response = await client.get("/forward-auth", headers=as_agent_of(MMAUDET))
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "delegation_expired"
+
+
+async def test_token_reuse_counts_from_when_the_broker_asked_lemonldap(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, clock: FakeClock
+) -> None:
+    """A slow answer must not stretch how long a revoked delegation still gets tokens."""
+    await consent(client, lemonldap, MMAUDET)
+    clock.advance(60)
+    lemonldap.latency = 10
     first = await client.get("/forward-auth", headers=as_agent_of(MMAUDET))
 
-    clock.advance(ACCESS_TOKEN_LIFETIME - 300)
+    clock.advance(50)
     second = await client.get("/forward-auth", headers=as_agent_of(MMAUDET))
+
+    assert second.headers["authorization"] != first.headers["authorization"]
+
+
+async def test_an_access_token_is_reused_until_five_minutes_before_it_expires(
+    settings: Settings, lemonldap: FakeLemonLDAP, clock: FakeClock
+) -> None:
+    reused_for_its_whole_life = replace(settings, token_reuse_seconds=ACCESS_TOKEN_LIFETIME)
+    async with running(reused_for_its_whole_life, lemonldap, clock) as broker:
+        await consent(broker, lemonldap, MMAUDET)
+        first = await broker.get("/forward-auth", headers=as_agent_of(MMAUDET))
+
+        clock.advance(ACCESS_TOKEN_LIFETIME - 300 - 1)
+        second = await broker.get("/forward-auth", headers=as_agent_of(MMAUDET))
+
+    assert second.headers["authorization"] == first.headers["authorization"]
+
+
+async def test_an_access_token_is_refreshed_five_minutes_before_it_expires(
+    settings: Settings, lemonldap: FakeLemonLDAP, clock: FakeClock
+) -> None:
+    reused_for_its_whole_life = replace(settings, token_reuse_seconds=ACCESS_TOKEN_LIFETIME)
+    async with running(reused_for_its_whole_life, lemonldap, clock) as broker:
+        await consent(broker, lemonldap, MMAUDET)
+        first = await broker.get("/forward-auth", headers=as_agent_of(MMAUDET))
+
+        clock.advance(ACCESS_TOKEN_LIFETIME - 300)
+        second = await broker.get("/forward-auth", headers=as_agent_of(MMAUDET))
 
     refreshed = bearer(second.headers["authorization"])
     assert refreshed != bearer(first.headers["authorization"])

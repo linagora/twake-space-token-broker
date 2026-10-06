@@ -23,7 +23,8 @@ A personal agent never holds a credential. Its owner consents once, through a fi
 
 - APISIX names the agent's owner by email in the `X-Twake-User-Email` header. It must remove any value the agent sends and set the header itself, from the agent's consumer.
 - On success, the broker answers 200 with `Authorization: Bearer <access token>`. List `Authorization` in the plugin's `upstream_headers`.
-- Access tokens are kept in memory and handed out until five minutes before they expire, then refreshed. They last 10 hours on Twake.
+- Access tokens are kept in memory and handed out for `TOKEN_REUSE_SECONDS` at most (60 seconds by default) from when the broker asked LemonLDAP for them, and never later than five minutes before they expire, then refreshed. They last 10 hours on Twake, but only a refresh shows that LemonLDAP no longer honours a delegation.
+- Each refresh makes LemonLDAP look the user up and issue a new 10-hour access token, so an agent in use costs a refresh a minute by default. An outage of LemonLDAP's LDAP directory or session store longer than `TOKEN_REUSE_SECONDS` shows to agents as `delegation_expired`, where the cached token used to hide it.
 - Simultaneous calls of one agent share one refresh.
 - If LemonLDAP ever returns a new refresh token, it replaces the stored one.
 
@@ -60,6 +61,7 @@ The key of the tokens and the key of the consent cookie are both derived from `E
 | `OIDC_CLIENT_SECRET` | the client's secret |
 | `ENCRYPTION_KEY` | at least 32 random bytes, base64 encoded, such as from `openssl rand -base64 32` |
 | `PUBLIC_BASE_URL` | where users reach the broker, such as `https://agent-consent.dev.twake.lin-saas.com` |
+| `TOKEN_REUSE_SECONDS` | seconds an access token is handed out before LemonLDAP is asked again, `60` by default: a revoked delegation still gets tokens for that long at most |
 
 ```sh
 DATABASE_URL=postgresql://broker:secret@localhost:5432/broker \

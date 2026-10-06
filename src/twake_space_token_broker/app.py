@@ -25,7 +25,9 @@ def create_app(
     http = httpx.AsyncClient(transport=lemonldap_transport, timeout=10.0)
     delegations = Delegations(pool, Cipher(settings.encryption_key))
     lemonldap = LemonLDAP(settings, http, clock)
-    access_tokens = AccessTokens(delegations, lemonldap, clock)
+    access_tokens = AccessTokens(
+        delegations, lemonldap, clock, reuse_seconds=settings.token_reuse_seconds
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:

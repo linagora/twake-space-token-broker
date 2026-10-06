@@ -30,6 +30,8 @@ class OfflineAccessDenied(Exception):
 @dataclass(frozen=True)
 class Tokens:
     access_token: str
+    requested_at: float
+    """When the broker asked LemonLDAP for them, in seconds since the epoch."""
     expires_at: float
     """When the access token expires, in seconds since the epoch."""
     refresh_token: str | None
@@ -69,6 +71,7 @@ def _json(response: httpx.Response) -> dict[str, Any]:
 def _tokens(body: dict[str, Any], requested_at: float) -> Tokens:
     return Tokens(
         access_token=body["access_token"],
+        requested_at=requested_at,
         expires_at=requested_at + int(body["expires_in"]),
         refresh_token=body.get("refresh_token"),
     )
