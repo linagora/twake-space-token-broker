@@ -77,8 +77,8 @@ async def test_an_expired_delegation_is_refused_with_the_consent_link(
         "type": "urn:twake:problem:delegation_expired",
         "title": "Delegation expired",
         "status": 401,
-        "detail": "The user's consent to their agent has expired: they must open the consent link"
-        " again.",
+        "detail": "The user's consent to their agent is no longer valid: they must open the"
+        " consent link again.",
         "code": "delegation_expired",
         "consent_url": f"{PUBLIC_BASE_URL}/consent",
     }

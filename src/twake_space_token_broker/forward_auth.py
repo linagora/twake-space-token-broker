@@ -51,8 +51,8 @@ def router(access_tokens: AccessTokens, consent_url: str) -> APIRouter:
                 status=401,
                 code="delegation_expired",
                 title="Delegation expired",
-                detail="The user's consent to their agent has expired: they must open the"
-                " consent link again.",
+                detail="The user's consent to their agent is no longer valid: they must open"
+                " the consent link again.",
                 extensions={"consent_url": consent_url},
             ) from expired
         except LemonLDAPUnavailable as unavailable:

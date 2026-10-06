@@ -68,7 +68,10 @@ class FakeLemonLDAP:
         return [token for token, owner in self._refresh_tokens.items() if owner == user][-1]
 
     def end_offline_session(self, user: str) -> None:
-        """The user's offline session ends, as it does after 30 days: their refresh tokens die."""
+        """The user's offline session ends: their refresh tokens die.
+
+        It expires after 30 days, and is deleted with the user on Twake, or by an admin.
+        """
         self._refresh_tokens = {
             token: owner for token, owner in self._refresh_tokens.items() if owner != user
         }
@@ -106,7 +109,9 @@ class FakeLemonLDAP:
     def _refresh(self, form: dict[str, str]) -> httpx.Response:
         user = self._refresh_tokens.get(form.get("refresh_token", ""))
         if user is None:
-            return _error(400, "invalid_grant")
+            # As LemonLDAP 2.21 does when it finds no session for the token, logging "Unable to
+            # find OIDC session" (_handleRefreshTokenGrant, in Issuer/OpenIDConnect.pm)
+            return _error(400, "invalid_request")
         if not self.rotates_refresh_tokens:
             return httpx.Response(200, json=self._access(user))
         del self._refresh_tokens[form["refresh_token"]]

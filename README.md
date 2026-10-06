@@ -33,8 +33,8 @@ Every error is an [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem (`a
 |---|---|---|
 | 400 | `missing_user_email` | the `X-Twake-User-Email` header is missing or empty |
 | 401 | `delegation_missing` | the owner never consented |
-| 401 | `delegation_expired` | LemonLDAP refuses the refresh token, such as when the offline session ended (after 30 days by default) |
-| 502 | `lemonldap_unavailable` | LemonLDAP gave no usable answer |
+| 401 | `delegation_expired` | LemonLDAP refuses the refresh token with `invalid_request` or `invalid_grant`, such as when the user was deleted, or their offline session expired (after 30 days by default) or was revoked |
+| 502 | `lemonldap_unavailable` | LemonLDAP gave no usable answer, or answered another error |
 
 - Both 401 problems carry the consent link in `consent_url`, for the agent to send to its owner.
 - APISIX passes an error's status and body on to the agent. List `Content-Type` in the plugin's `client_headers` to keep `application/problem+json`.
