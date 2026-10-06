@@ -9,6 +9,7 @@ from httpx import AsyncClient
 
 from tests.conftest import (
     ALICE,
+    DRIVE_INSTANCE_DOMAIN,
     MMAUDET,
     PUBLIC_BASE_URL,
     FakeClock,
@@ -378,6 +379,33 @@ async def test_a_drive_route_gets_the_owners_drive_token_and_instance(
     assert lemonldap.owner_of(bearer(response.headers["authorization"])) == MMAUDET
     assert cozy_stack.access_of(response.headers["x-twake-drive-token"]) == (drive, FILES)
     assert response.headers["x-twake-drive-instance"] == drive
+
+
+async def test_each_owner_gets_their_own_drive_token_and_instance(
+    client: AsyncClient,
+    lemonldap: FakeLemonLDAP,
+    cozy_stack: FakeCozyStack,
+    clock: FakeClock,
+    drive: str,
+) -> None:
+    alice_drive = f"alice.{DRIVE_INSTANCE_DOMAIN}"
+    cozy_stack.create_instance(alice_drive)
+    lemonldap.workplaces[ALICE] = alice_drive
+    await consent_with_drive(client, lemonldap, cozy_stack, MMAUDET)
+    await consent_with_drive(client, lemonldap, cozy_stack, ALICE)
+
+    # With the tokens of the consents, then with tokens refreshed from what the broker stored
+    for _ in range(2):
+        mine = await client.get("/forward-auth", params=DRIVE, headers=as_agent_of(MMAUDET))
+        hers = await client.get("/forward-auth", params=DRIVE, headers=as_agent_of(ALICE))
+
+        assert lemonldap.owner_of(bearer(mine.headers["authorization"])) == MMAUDET
+        assert cozy_stack.access_of(mine.headers["x-twake-drive-token"]) == (drive, FILES)
+        assert mine.headers["x-twake-drive-instance"] == drive
+        assert lemonldap.owner_of(bearer(hers.headers["authorization"])) == ALICE
+        assert cozy_stack.access_of(hers.headers["x-twake-drive-token"]) == (alice_drive, FILES)
+        assert hers.headers["x-twake-drive-instance"] == alice_drive
+        clock.advance(60)
 
 
 async def test_a_route_that_does_not_ask_for_drive_gets_no_drive_token(
