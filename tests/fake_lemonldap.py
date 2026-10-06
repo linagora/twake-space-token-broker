@@ -4,6 +4,7 @@ import base64
 import hashlib
 import itertools
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import parse_qsl
@@ -12,6 +13,9 @@ import httpx
 
 ACCESS_TOKEN_LIFETIME = 36000
 """Seconds an access token lasts, 10 hours as on Twake's LemonLDAP."""
+
+Outage = Literal["error page", "unreachable", "LDAP down", "session store down"]
+"""What fails: LemonLDAP itself, or its LDAP directory or session store, which it survives."""
 
 
 @dataclass(frozen=True)
@@ -30,17 +34,28 @@ def _error(status: int, error: str) -> httpx.Response:
 
 
 class FakeLemonLDAP:
-    def __init__(self, *, issuer: str, client_id: str, client_secret: str) -> None:
+    def __init__(
+        self,
+        *,
+        issuer: str,
+        client_id: str,
+        client_secret: str,
+        let_time_pass: Callable[[float], None],
+    ) -> None:
         self._issuer = issuer
         self._client_id = client_id
         self._credentials = (
             "Basic " + base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
         )
+        self._let_time_pass = let_time_pass
+        self.latency = 0.0
+        """Seconds each token request takes, which pass on the broker's clock."""
         self._serial = itertools.count(1)
         self._codes: dict[str, _Code] = {}
         self._refresh_tokens: dict[str, str] = {}
         self._access_tokens: dict[str, str] = {}
-        self.outage: Literal["error page", "unreachable"] | None = None
+        self._deleted_from_ldap: set[str] = set()
+        self.outage: Outage | None = None
         self.grants_offline_access = True
         self.rotates_refresh_tokens = False
         """Twake's LemonLDAP does not rotate them, but another configuration could."""
@@ -68,14 +83,22 @@ class FakeLemonLDAP:
         return [token for token, owner in self._refresh_tokens.items() if owner == user][-1]
 
     def end_offline_session(self, user: str) -> None:
-        """The user's offline session ends, as it does after 30 days: their refresh tokens die."""
+        """The user's offline session ends: their refresh tokens die.
+
+        It expires after 30 days, and is deleted with the user on Twake, or by an admin.
+        """
         self._refresh_tokens = {
             token: owner for token, owner in self._refresh_tokens.items() if owner != user
         }
 
+    def delete_from_ldap(self, user: str) -> None:
+        """The user leaves LDAP, but their offline session stays, as when nothing deleted it."""
+        self._deleted_from_ldap.add(user)
+
     def _token_endpoint(self, request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
         assert str(request.url) == f"{self._issuer}oauth2/token"
+        self._let_time_pass(self.latency)
         if self.outage == "unreachable":
             raise httpx.ConnectError("Connection refused", request=request)
         if self.outage == "error page":
@@ -104,12 +127,28 @@ class FakeLemonLDAP:
         return httpx.Response(200, json=tokens)
 
     def _refresh(self, form: dict[str, str]) -> httpx.Response:
-        user = self._refresh_tokens.get(form.get("refresh_token", ""))
+        if self.outage == "session store down":
+            # LemonLDAP 2.21 answers as for a missing session when it cannot read the token's:
+            # Common::Session fails alike on both ("Session cannot be tied", in _tie_session)
+            return _error(400, "invalid_request")
+        presented = form.get("refresh_token", "")
+        user = self._refresh_tokens.get(presented)
         if user is None:
+            # As LemonLDAP 2.21 does when it finds no session for the token, logging "Unable to
+            # find OIDC session" (_handleRefreshTokenGrant, in Issuer/OpenIDConnect.pm)
+            return _error(400, "invalid_request")
+        # LemonLDAP 2.21 looks the user up again, and answers invalid_grant when it cannot. It
+        # removes their offline session only on PE_BADCREDENTIALS, when LDAP explicitly does
+        # not find them, "and not in case of temporary failures", which it logs as "Could not
+        # resolve user" (getAttributesForUser, in Issuer/OpenIDConnect.pm)
+        if self.outage == "LDAP down":
+            return _error(400, "invalid_grant")
+        if user in self._deleted_from_ldap:
+            del self._refresh_tokens[presented]
             return _error(400, "invalid_grant")
         if not self.rotates_refresh_tokens:
             return httpx.Response(200, json=self._access(user))
-        del self._refresh_tokens[form["refresh_token"]]
+        del self._refresh_tokens[presented]
         rotated = f"refresh-{next(self._serial)}"
         self._refresh_tokens[rotated] = user
         return httpx.Response(200, json={**self._access(user), "refresh_token": rotated})

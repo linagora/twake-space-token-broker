@@ -7,6 +7,9 @@ from typing import Self
 KEY_SIZE = 32
 """Bytes of the encryption key, at least: as long as the keys derived from it."""
 
+TOKEN_REUSE_SECONDS = 60
+"""The default of Settings.token_reuse_seconds."""
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -19,6 +22,11 @@ class Settings:
     """The one secret every key of the broker derives from."""
     public_base_url: str
     """Where users reach the consent page, such as https://agent-consent.example.com."""
+    token_reuse_seconds: int = TOKEN_REUSE_SECONDS
+    """Seconds an access token is handed out before LemonLDAP is asked again.
+
+    It bounds how long a revoked delegation still gets tokens, as an access token lasts hours.
+    """
 
     @property
     def redirect_uri(self) -> str:
@@ -38,7 +46,16 @@ class Settings:
             client_secret=environ["OIDC_CLIENT_SECRET"],
             encryption_key=_key(environ["ENCRYPTION_KEY"]),
             public_base_url=environ["PUBLIC_BASE_URL"].rstrip("/"),
+            token_reuse_seconds=_reuse_seconds(
+                environ.get("TOKEN_REUSE_SECONDS", str(TOKEN_REUSE_SECONDS))
+            ),
         )
+
+
+def _reuse_seconds(text: str) -> int:
+    if not text.isdecimal():
+        raise ValueError("TOKEN_REUSE_SECONDS must be a whole number of seconds")
+    return int(text)
 
 
 def _key(encoded: str) -> bytes:

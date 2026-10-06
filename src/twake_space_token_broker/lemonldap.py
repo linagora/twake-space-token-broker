@@ -2,7 +2,7 @@
 
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Set
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode
@@ -16,7 +16,11 @@ SCOPE = "openid email offline_access"
 
 
 class GrantRefused(Exception):
-    """LemonLDAP refused a code or a refresh token, which can no longer give any token."""
+    """LemonLDAP refused a code or a refresh token.
+
+    A refused refresh token may work again after an outage of LemonLDAP's LDAP directory or
+    session store, during which LemonLDAP answers the same errors.
+    """
 
 
 class LemonLDAPUnavailable(Exception):
@@ -30,6 +34,8 @@ class OfflineAccessDenied(Exception):
 @dataclass(frozen=True)
 class Tokens:
     access_token: str
+    requested_at: float
+    """When the broker asked LemonLDAP for them, in seconds since the epoch."""
     expires_at: float
     """When the access token expires, in seconds since the epoch."""
     refresh_token: str | None
@@ -69,6 +75,7 @@ def _json(response: httpx.Response) -> dict[str, Any]:
 def _tokens(body: dict[str, Any], requested_at: float) -> Tokens:
     return Tokens(
         access_token=body["access_token"],
+        requested_at=requested_at,
         expires_at=requested_at + int(body["expires_in"]),
         refresh_token=body.get("refresh_token"),
     )
@@ -110,7 +117,8 @@ class LemonLDAP:
                 "code": code,
                 "redirect_uri": self._settings.redirect_uri,
                 "code_verifier": verifier,
-            }
+            },
+            refused_with={"invalid_grant"},
         )
         if tokens.refresh_token is None:
             raise OfflineAccessDenied()
@@ -123,11 +131,22 @@ class LemonLDAP:
     async def refresh(self, refresh_token: str) -> Tokens:
         """A new access token for the user the refresh token was issued to."""
         tokens, _ = await self._token(
-            {"grant_type": "refresh_token", "refresh_token": refresh_token}
+            {"grant_type": "refresh_token", "refresh_token": refresh_token},
+            # LemonLDAP 2.21 answers invalid_request when it finds no session for the token, as
+            # once the offline session expired or was deleted, and invalid_grant when the user
+            # is no longer in LDAP
+            refused_with={"invalid_request", "invalid_grant"},
         )
         return tokens
 
-    async def _token(self, form: dict[str, str]) -> tuple[Tokens, dict[str, Any]]:
+    async def _token(
+        self, form: dict[str, str], *, refused_with: Set[str]
+    ) -> tuple[Tokens, dict[str, Any]]:
+        """Tokens from LemonLDAP's token endpoint.
+
+        A 400 with one of the errors in refused_with refuses the grant. Any other error says
+        nothing of the grant, so the same request may work later.
+        """
         requested_at = self._clock()
         try:
             response = await self._http.post(
@@ -138,8 +157,8 @@ class LemonLDAP:
         except httpx.HTTPError as error:
             raise LemonLDAPUnavailable(f"no answer ({type(error).__name__})") from error
         body = _json(response)
-        if response.status_code == 400 and body.get("error") == "invalid_grant":
-            raise GrantRefused()
+        if response.status_code == 400 and body.get("error") in refused_with:
+            raise GrantRefused(body["error"])
         if response.status_code != 200:
             raise LemonLDAPUnavailable(f"HTTP {response.status_code} {body.get('error', '')}")
         try:
