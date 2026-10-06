@@ -27,6 +27,7 @@ A personal agent never holds a credential. Its owner consents once, through a fi
 - Each refresh makes LemonLDAP look the user up and issue a new 10-hour access token, so an agent in use costs a refresh a minute by default. An outage of LemonLDAP's LDAP directory or session store longer than `TOKEN_REUSE_SECONDS` shows to agents as `delegation_expired`, where the cached token used to hide it.
 - Simultaneous calls of one agent share one refresh.
 - If LemonLDAP ever returns a new refresh token, it replaces the stored one.
+- The broker deletes no delegation that LemonLDAP refuses, because LemonLDAP 2.21 answers the same errors while its LDAP directory or session store fails, and removes the offline session itself only for a user it no longer finds. A delegation thus works again after an outage without a new consent. A deleted user's row stays, and each call of their agent asks LemonLDAP again and logs a warning.
 
 Every error is an [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem (`application/problem+json`) with a stable `code`:
 

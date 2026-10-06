@@ -16,7 +16,11 @@ SCOPE = "openid email offline_access"
 
 
 class GrantRefused(Exception):
-    """LemonLDAP refused a code or a refresh token, which can no longer give any token."""
+    """LemonLDAP refused a code or a refresh token.
+
+    A refused refresh token may work again after an outage of LemonLDAP's LDAP directory or
+    session store, during which LemonLDAP answers the same errors.
+    """
 
 
 class LemonLDAPUnavailable(Exception):
