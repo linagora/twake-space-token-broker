@@ -135,6 +135,8 @@ class FakeCozyStack:
         return httpx.Response(404, json={"error": "Not Found"})
 
     def _register(self, instance: _Instance, request: httpx.Request) -> httpx.Response:
+        # cozy-stack answers anything else with a 406 or a 415 (registerClient in web/auth)
+        assert request.headers["accept"] == "application/json"
         assert request.headers["content-type"] == "application/json"
         metadata = json.loads(request.content)
         redirect_uris = metadata.get("redirect_uris")
