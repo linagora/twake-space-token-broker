@@ -167,7 +167,8 @@ class FakeCozyStack:
     ) -> httpx.Response:
         client = instance.clients.get(client_id)
         if client is None:
-            return httpx.Response(404, json={"error": "Not Found"})
+            # As cozy-stack does (deleteClient in web/auth/register.go)
+            return httpx.Response(204)
         if request.headers.get("authorization") != f"Bearer {client.registration_access_token}":
             return httpx.Response(401, json={"error": "Unauthorized"})
         del instance.clients[client_id]

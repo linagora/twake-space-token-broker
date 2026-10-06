@@ -151,6 +151,8 @@ def router(
                 "LemonLDAP n'a pas accordé d'accès hors ligne à l'assistant.", status_code=502
             )
         await access_tokens.consented(signed_in)
+        # The new consent replaces the whole delegation: Drive comes back only if granted again
+        await drive_tokens.forget(signed_in.user)
         return await to_drive(signed_in)
 
     async def to_drive(signed_in: SignedIn) -> Response:

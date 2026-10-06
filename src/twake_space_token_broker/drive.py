@@ -6,8 +6,9 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
-from twake_space_token_broker.cozy_stack import CozyStack, InstanceRefused
+from twake_space_token_broker.cozy_stack import CozyStack, InstanceRefused, InstanceUnavailable
 from twake_space_token_broker.delegations import Delegations, DriveDelegation
+from twake_space_token_broker.keys import Undecryptable
 from twake_space_token_broker.lemonldap import Tokens
 from twake_space_token_broker.tokens import DelegationExpired, DelegationMissing, reusable_until
 
@@ -44,6 +45,22 @@ class DriveTokens:
         self._reuse_seconds = reuse_seconds
         self._cache: dict[str, _Cached] = {}
         self._refreshing: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+    async def forget(self, user: str) -> None:
+        """Drops the user's Drive delegation, and removes its client from the instance."""
+        try:
+            earlier = await self._delegations.drive_of(user)
+        except Undecryptable:
+            # Kept under another ENCRYPTION_KEY: its client stays, for the owner to remove
+            earlier = None
+        await self._delegations.forget_drive(user)
+        self._cache.pop(user, None)
+        if earlier is None:
+            return
+        try:
+            await self._cozy_stack.unregister(earlier.instance, earlier.client)
+        except InstanceUnavailable as unavailable:
+            logger.warning("The Drive instance of %s kept an earlier client: %s", user, unavailable)
 
     async def request(self, user: str, instance: str, *, state: str, verifier: str) -> str:
         """Registers the broker on the user's Drive instance, and gives where they let it in."""

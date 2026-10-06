@@ -3,7 +3,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -88,6 +88,19 @@ class CozyStack:
             )
         except KeyError as error:
             raise InstanceUnavailable("an answer without the client") from error
+
+    async def unregister(self, instance: str, client: Client) -> None:
+        """Removes the client from the instance, which voids every token it was given."""
+        try:
+            response = await self._http.delete(
+                f"https://{instance}/auth/register/{quote(client.client_id, safe='')}",
+                headers={"Authorization": f"Bearer {client.registration_access_token}"},
+            )
+        except httpx.HTTPError as error:
+            raise InstanceUnavailable(f"no answer ({type(error).__name__})") from error
+        # 204 too when the client is already gone, as once its owner removed it
+        if response.status_code != 204:
+            raise InstanceUnavailable(f"HTTP {response.status_code}")
 
     def authorize_url(self, instance: str, client: Client, *, state: str, verifier: str) -> str:
         """Where the instance's owner grants the client access to their files, with PKCE."""
