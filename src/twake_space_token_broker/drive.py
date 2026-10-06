@@ -9,8 +9,7 @@ from dataclasses import dataclass, replace
 from twake_space_token_broker.cozy_stack import CozyStack, InstanceRefused, InstanceUnavailable
 from twake_space_token_broker.delegations import Delegations, DriveDelegation
 from twake_space_token_broker.keys import Undecryptable
-from twake_space_token_broker.lemonldap import Tokens
-from twake_space_token_broker.tokens import DelegationExpired, DelegationMissing, reusable_until
+from twake_space_token_broker.tokens import DelegationExpired, DelegationMissing, TokenCache
 
 logger = logging.getLogger(__name__)
 
@@ -24,12 +23,6 @@ class DriveAccess:
     access_token: str
 
 
-@dataclass(frozen=True)
-class _Cached:
-    access: DriveAccess
-    reusable_until: float
-
-
 class DriveTokens:
     def __init__(
         self,
@@ -41,9 +34,7 @@ class DriveTokens:
     ) -> None:
         self._delegations = delegations
         self._cozy_stack = cozy_stack
-        self._clock = clock
-        self._reuse_seconds = reuse_seconds
-        self._cache: dict[str, _Cached] = {}
+        self._cache = TokenCache[DriveAccess](clock, reuse_seconds=reuse_seconds)
         self._refreshing: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     async def forget(self, user: str) -> None:
@@ -56,7 +47,7 @@ class DriveTokens:
                 # Kept under another ENCRYPTION_KEY: its client stays, for the owner to remove
                 earlier = None
             await self._delegations.forget_drive(user)
-            self._cache.pop(user, None)
+            self._cache.drop(user)
         if earlier is None:
             return
         try:
@@ -79,25 +70,13 @@ class DriveTokens:
         await self._delegations.save_drive(
             user, replace(requested, refresh_token=tokens.refresh_token)
         )
-        self._keep(user, requested.instance, tokens)
+        self._cache.keep(user, DriveAccess(requested.instance, tokens.access_token), tokens)
 
     async def of(self, user: str) -> DriveAccess:
         """A fresh access token of the user's Drive instance, for the user's agent."""
         # One refresh at a time per user, as for LemonLDAP's tokens
         async with self._refreshing[user]:
-            return self._fresh(user) or await self._refresh(user)
-
-    def _fresh(self, user: str) -> DriveAccess | None:
-        cached = self._cache.get(user)
-        if cached is not None and self._clock() < cached.reusable_until:
-            return cached.access
-        return None
-
-    def _keep(self, user: str, instance: str, tokens: Tokens) -> None:
-        self._cache[user] = _Cached(
-            access=DriveAccess(instance=instance, access_token=tokens.access_token),
-            reusable_until=reusable_until(tokens, self._reuse_seconds),
-        )
+            return self._cache.fresh(user) or await self._refresh(user)
 
     async def _refresh(self, user: str) -> DriveAccess:
         drive = await self._delegations.drive_of(user)
@@ -115,5 +94,6 @@ class DriveTokens:
             await self._delegations.save_drive(
                 user, replace(drive, refresh_token=tokens.refresh_token)
             )
-        self._keep(user, drive.instance, tokens)
-        return DriveAccess(instance=drive.instance, access_token=tokens.access_token)
+        access = DriveAccess(instance=drive.instance, access_token=tokens.access_token)
+        self._cache.keep(user, access, tokens)
+        return access
