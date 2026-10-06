@@ -87,6 +87,9 @@ class AccessTokens:
         try:
             tokens = await self._lemonldap.refresh(refresh_token)
         except GrantRefused as refused:
+            # LemonLDAP's error tells a deleted offline session (invalid_request) from a user
+            # it no longer finds or cannot look up (invalid_grant)
+            logger.warning("LemonLDAP refused the delegation of %s (%s)", user, refused)
             raise DelegationExpired() from refused
         if tokens.refresh_token is not None and tokens.refresh_token != refresh_token:
             await self._delegations.save(user, tokens.refresh_token)

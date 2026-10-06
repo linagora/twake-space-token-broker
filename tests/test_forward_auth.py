@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from dataclasses import replace
 from typing import Literal
 
@@ -128,6 +129,25 @@ async def test_an_expired_delegation_is_refused_with_the_consent_link(
         "code": "delegation_expired",
         "consent_url": f"{PUBLIC_BASE_URL}/consent",
     }
+
+
+async def test_a_refused_delegation_is_logged_with_lemonldaps_error(
+    client: AsyncClient,
+    lemonldap: FakeLemonLDAP,
+    clock: FakeClock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    await consent(client, lemonldap, MMAUDET)
+    clock.advance(ACCESS_TOKEN_LIFETIME)
+    lemonldap.end_offline_session(MMAUDET)
+
+    await client.get("/forward-auth", headers=as_agent_of(MMAUDET))
+
+    assert (
+        "twake_space_token_broker.tokens",
+        logging.WARNING,
+        f"LemonLDAP refused the delegation of {MMAUDET} (invalid_request)",
+    ) in caplog.record_tuples
 
 
 async def test_an_owner_who_never_consented_is_refused_with_the_consent_link(
