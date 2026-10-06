@@ -37,6 +37,7 @@ Twake Drive accepts only tokens of the owner's own instance, a cozy-stack. The s
 - APISIX names the agent's owner by email in the `X-Twake-User-Email` header. It must remove any value the agent sends and set the header itself, from the agent's consumer.
 - On success, the broker answers 200 with `Authorization: Bearer <access token>`. List `Authorization` in the plugin's `upstream_headers`.
 - A Drive route appends `?token=drive` to the plugin's URI. The broker then answers 200 with three headers: `Authorization` as above, which names the user to the contract, `X-Twake-Drive-Token`, an access token of the owner's Drive instance with no scheme, and `X-Twake-Drive-Instance`, the instance's host. List the three in the plugin's `upstream_headers`: a 200 of a Drive route always sets them, so they replace any value the agent sent. Without the query, nothing changes.
+- When the owner has no Drive delegation, a Drive route asks LemonLDAP's userinfo for their instance. If LemonLDAP names one under `DRIVE_INSTANCE_DOMAIN`, the answer is `delegation_missing` with the consent link, since a new consent lets the broker in. If not, it is `drive_instance_unknown`, without the link, which would only take the owner round in circles.
 - Access tokens are kept in memory and handed out for `TOKEN_REUSE_SECONDS` at most (60 seconds by default) from when the broker asked LemonLDAP for them, and never later than five minutes before they expire, then refreshed. They last 10 hours on Twake, but only a refresh shows that LemonLDAP no longer honours a delegation.
 - Each refresh makes LemonLDAP look the user up and issue a new 10-hour access token, so an agent in use costs a refresh a minute by default. An outage of LemonLDAP's LDAP directory or session store longer than `TOKEN_REUSE_SECONDS` shows to agents as `delegation_expired`, where the cached token used to hide it.
 - Simultaneous calls of one agent share one refresh.
@@ -50,8 +51,9 @@ Every error is an [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem (`a
 |---|---|---|
 | 400 | `missing_user_email` | the `X-Twake-User-Email` header is missing or empty |
 | 400 | `unknown_token` | the `token` query asks for another token than `drive` |
-| 401 | `delegation_missing` | the owner never consented, or, on a Drive route, never let the broker in on their Drive instance |
+| 401 | `delegation_missing` | the owner never consented, or, on a Drive route, never let the broker in on the Drive instance LemonLDAP names |
 | 401 | `delegation_expired` | LemonLDAP refuses the refresh token with `invalid_request` or `invalid_grant`, such as when the user was deleted, or their offline session expired (after 30 days by default) or was revoked; or, on a Drive route, the instance refuses its refresh token, such as once the owner removed the broker from it |
+| 404 | `drive_instance_unknown` | on a Drive route, the owner has no Drive delegation, and LemonLDAP names no instance under `DRIVE_INSTANCE_DOMAIN`, or that setting is unset |
 | 502 | `lemonldap_unavailable` | LemonLDAP gave no usable answer, or answered another error |
 | 502 | `drive_unavailable` | on a Drive route, the owner's Drive instance gave no usable answer |
 

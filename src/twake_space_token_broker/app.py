@@ -63,7 +63,9 @@ def create_app(
             lemonldap, Signer(settings.encryption_key), access_tokens, drive_tokens, clock
         )
     )
-    app.include_router(forward_auth.router(access_tokens, drive_tokens, settings.consent_url))
+    app.include_router(
+        forward_auth.router(access_tokens, drive_tokens, lemonldap, settings.consent_url)
+    )
     return app
 
 
