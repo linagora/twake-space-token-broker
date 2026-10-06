@@ -5,11 +5,16 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Response
 
+from twake_space_token_broker.cozy_stack import InstanceUnavailable
+from twake_space_token_broker.drive import DriveTokens
 from twake_space_token_broker.lemonldap import LemonLDAPUnavailable
 from twake_space_token_broker.problems import Problem
 from twake_space_token_broker.tokens import AccessTokens, DelegationExpired, DelegationMissing
 
 logger = logging.getLogger(__name__)
+
+DRIVE = "drive"
+"""The token a Drive route asks for, with ?token=drive."""
 
 
 def _owner(
@@ -29,14 +34,28 @@ def _owner(
 Owner = Annotated[str, Depends(_owner)]
 
 
-def router(access_tokens: AccessTokens, consent_url: str) -> APIRouter:
+def router(access_tokens: AccessTokens, drive_tokens: DriveTokens, consent_url: str) -> APIRouter:
     routes = APIRouter()
 
     @routes.get("/forward-auth")
-    async def forward_auth(owner: Owner) -> Response:
-        """Answers with the owner's access token, which APISIX passes on to the contract."""
+    async def forward_auth(owner: Owner, token: str | None = None) -> Response:
+        """Answers with the owner's access token, which APISIX passes on to the contract, and with
+        a token of their Drive instance when the route asks for it."""
+        if token not in (None, DRIVE):
+            raise Problem(
+                status=400,
+                code="unknown_token",
+                title="Unknown token",
+                detail="The token query parameter can only ask for drive.",
+            )
         try:
-            access_token = await access_tokens.of(owner)
+            # LemonLDAP's token first: it names the owner to the contract, and a delegation
+            # LemonLDAP no longer honours gives no Drive token either
+            headers = {"Authorization": f"Bearer {await access_tokens.of(owner)}"}
+            if token == DRIVE:
+                drive = await drive_tokens.of(owner)
+                headers["X-Twake-Drive-Token"] = drive.access_token
+                headers["X-Twake-Drive-Instance"] = drive.instance
         except DelegationMissing as missing:
             raise Problem(
                 status=401,
@@ -63,6 +82,15 @@ def router(access_tokens: AccessTokens, consent_url: str) -> APIRouter:
                 title="LemonLDAP unavailable",
                 detail="LemonLDAP did not answer the token request: try again later.",
             ) from unavailable
-        return Response(headers={"Authorization": f"Bearer {access_token}"})
+        except InstanceUnavailable as unavailable:
+            logger.warning("The Drive instance of %s refreshed no token: %s", owner, unavailable)
+            raise Problem(
+                status=502,
+                code="drive_unavailable",
+                title="Drive unavailable",
+                detail="The owner's Drive instance did not answer the token request: try again"
+                " later.",
+            ) from unavailable
+        return Response(headers=headers)
 
     return routes

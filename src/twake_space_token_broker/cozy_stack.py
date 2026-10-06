@@ -115,6 +115,12 @@ class CozyStack:
             raise InstanceUnavailable("an answer without a refresh token")
         return tokens
 
+    async def refresh(self, instance: str, client: Client, refresh_token: str) -> Tokens:
+        """A new access token of the instance, for the client the refresh token was issued to."""
+        return await self._token(
+            instance, client, {"grant_type": "refresh_token", "refresh_token": refresh_token}
+        )
+
     async def _token(self, instance: str, client: Client, form: dict[str, str]) -> Tokens:
         """Tokens from the instance's token endpoint, whose every refusal is a 400."""
         requested_at = self._clock()

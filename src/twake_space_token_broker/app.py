@@ -38,7 +38,9 @@ def create_app(
         redirect_uri=settings.redirect_uri,
         client_uri=settings.public_base_url,
     )
-    drive_tokens = DriveTokens(delegations, cozy_stack)
+    drive_tokens = DriveTokens(
+        delegations, cozy_stack, clock, reuse_seconds=settings.token_reuse_seconds
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -61,7 +63,7 @@ def create_app(
             lemonldap, Signer(settings.encryption_key), access_tokens, drive_tokens, clock
         )
     )
-    app.include_router(forward_auth.router(access_tokens, settings.consent_url))
+    app.include_router(forward_auth.router(access_tokens, drive_tokens, settings.consent_url))
     return app
 
 

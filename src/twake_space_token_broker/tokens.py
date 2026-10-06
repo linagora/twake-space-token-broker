@@ -16,6 +16,16 @@ REFRESH_MARGIN = 300
 """Seconds before its expiry when an access token is no longer handed out, but refreshed."""
 
 
+def reusable_until(tokens: Tokens, reuse_seconds: int) -> float:
+    """When to stop handing out an access token and ask for a new one, in seconds since the epoch.
+
+    The token lasts hours, but only a refresh tells whether its delegation is still honoured:
+    counted from the request, so that a slow answer cannot stretch it, reuse_seconds bounds how
+    long a revoked delegation still gets tokens.
+    """
+    return min(tokens.requested_at + reuse_seconds, tokens.expires_at - REFRESH_MARGIN)
+
+
 class DelegationMissing(Exception):
     """The user never consented to their agent acting for them."""
 
@@ -68,12 +78,7 @@ class AccessTokens:
         """Keeps the user's access token, to hand out until LemonLDAP must be asked again."""
         self._cache[user] = _Cached(
             access_token=tokens.access_token,
-            # The token lasts hours, but only a refresh tells whether LemonLDAP still honours
-            # the delegation: counted from the request, so that a slow answer cannot stretch
-            # it, reuse_seconds bounds how long a revoked delegation still gets tokens
-            reusable_until=min(
-                tokens.requested_at + self._reuse_seconds, tokens.expires_at - REFRESH_MARGIN
-            ),
+            reusable_until=reusable_until(tokens, self._reuse_seconds),
         )
 
     async def _refresh(self, user: str) -> str:
