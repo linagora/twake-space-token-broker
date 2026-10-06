@@ -8,7 +8,8 @@ from dataclasses import dataclass
 
 from twake_space_token_broker.delegations import Delegations
 from twake_space_token_broker.keys import Undecryptable
-from twake_space_token_broker.lemonldap import GrantRefused, LemonLDAP, SignedIn, Tokens
+from twake_space_token_broker.lemonldap import GrantRefused, LemonLDAP, SignedIn
+from twake_space_token_broker.oauth import Tokens
 
 logger = logging.getLogger(__name__)
 

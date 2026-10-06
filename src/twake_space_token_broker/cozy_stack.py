@@ -2,13 +2,12 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 from urllib.parse import quote, urlencode
 
 import httpx
 
 from twake_space_token_broker import pkce
-from twake_space_token_broker.lemonldap import Tokens
+from twake_space_token_broker.oauth import Tokens, json_object
 
 SCOPE = "io.cozy.files:GET,POST"
 """Reading and creating files, as the agents' Drive contracts do: never the whole instance."""
@@ -37,14 +36,6 @@ class Client:
     client_secret: str
     registration_access_token: str
     """What lets the broker remove the client from the instance."""
-
-
-def _json(response: httpx.Response) -> dict[str, Any]:
-    try:
-        body = response.json()
-    except ValueError:
-        return {}
-    return body if isinstance(body, dict) else {}
 
 
 class CozyStack:
@@ -77,7 +68,7 @@ class CozyStack:
             )
         except httpx.HTTPError as error:
             raise InstanceUnavailable(f"no answer ({type(error).__name__})") from error
-        body = _json(response)
+        body = json_object(response)
         if response.status_code != 201:
             raise InstanceUnavailable(f"HTTP {response.status_code} {body.get('error', '')}")
         try:
@@ -145,7 +136,7 @@ class CozyStack:
             )
         except httpx.HTTPError as error:
             raise InstanceUnavailable(f"no answer ({type(error).__name__})") from error
-        body = _json(response)
+        body = json_object(response)
         if response.status_code == 400:
             raise InstanceRefused(body.get("error", ""))
         if response.status_code != 200:

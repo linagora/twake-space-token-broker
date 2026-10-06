@@ -11,6 +11,7 @@ from urllib.parse import urlencode
 import httpx
 
 from twake_space_token_broker import base64url, pkce
+from twake_space_token_broker.oauth import Tokens, json_object
 from twake_space_token_broker.settings import LABEL, Settings
 
 logger = logging.getLogger(__name__)
@@ -38,16 +39,6 @@ class OfflineAccessDenied(Exception):
 
 
 @dataclass(frozen=True)
-class Tokens:
-    access_token: str
-    requested_at: float
-    """When the broker asked LemonLDAP for them, in seconds since the epoch."""
-    expires_at: float
-    """When the access token expires, in seconds since the epoch."""
-    refresh_token: str | None
-
-
-@dataclass(frozen=True)
 class SignedIn:
     user: str
     """The user's email, which is the subject LemonLDAP names its users by on Twake."""
@@ -63,14 +54,6 @@ def _subject(id_token: str) -> str:
     """
     claims: dict[str, Any] = json.loads(base64url.decode(id_token.split(".")[1]))
     return str(claims["sub"])
-
-
-def _json(response: httpx.Response) -> dict[str, Any]:
-    try:
-        body = response.json()
-    except ValueError:
-        return {}
-    return body if isinstance(body, dict) else {}
 
 
 def _tokens(body: dict[str, Any], requested_at: float) -> Tokens:
@@ -141,7 +124,7 @@ class LemonLDAP:
             )
         except httpx.HTTPError as error:
             raise LemonLDAPUnavailable(f"no answer ({type(error).__name__})") from error
-        body = _json(response)
+        body = json_object(response)
         if response.status_code != 200 or not body:
             raise LemonLDAPUnavailable(f"HTTP {response.status_code} {body.get('error', '')}")
         host = body.get(DRIVE_INSTANCE_CLAIM)
@@ -184,7 +167,7 @@ class LemonLDAP:
             )
         except httpx.HTTPError as error:
             raise LemonLDAPUnavailable(f"no answer ({type(error).__name__})") from error
-        body = _json(response)
+        body = json_object(response)
         if response.status_code == 400 and body.get("error") in refused_with:
             raise GrantRefused(body["error"])
         if response.status_code != 200:
