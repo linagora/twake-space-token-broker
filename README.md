@@ -12,6 +12,7 @@ A personal agent never holds a credential. Its owner consents once, through a fi
 | `GET /callback` | where LemonLDAP sends the user back: a short page in French |
 
 - The consent signs the user in with the `twake-space-agents` client: an authorization code with PKCE (S256) and the scope `openid email offline_access`. The state and the PKCE verifier wait in a signed, HttpOnly cookie for 10 minutes.
+- It asks for `prompt=login`, so LemonLDAP has the user sign in again even when an SSO session is open: a browser still signed in as someone else cannot consent for them unnoticed.
 - The callback checks the state, then exchanges the code with `client_secret_basic`. It stores the refresh token under the user's email, which is the `sub` of the ID token on Twake's LemonLDAP.
 - Consenting again replaces the stored token.
 - When something fails, the page says why, with a link to start over.

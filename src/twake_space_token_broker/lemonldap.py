@@ -96,6 +96,8 @@ class LemonLDAP:
                 "state": state,
                 "code_challenge": _challenge(verifier),
                 "code_challenge_method": "S256",
+                # Signs in again even with an open SSO session, which may be someone else's
+                "prompt": "login",
             }
         )
         return f"{self._endpoint('authorize')}?{query}"

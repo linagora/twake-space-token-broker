@@ -39,6 +39,13 @@ async def test_consent_sends_the_user_to_lemonldap_with_pkce(client: AsyncClient
     )
 
 
+async def test_consent_asks_lemonldap_for_a_fresh_login(client: AsyncClient) -> None:
+    """A browser still signed in as someone else must not consent for them without a word."""
+    response = await client.get("/consent")
+
+    assert URL(response.headers["location"]).params.get("prompt") == "login"
+
+
 async def test_consent_stores_the_users_refresh_token_encrypted(
     client: AsyncClient, lemonldap: FakeLemonLDAP, database_url: str
 ) -> None:
