@@ -206,6 +206,20 @@ async def test_consent_stores_the_drive_delegation_encrypted(
         assert credential.encode().hex() not in stored
 
 
+async def test_a_drive_delegation_goes_with_the_users_delegation(
+    client: AsyncClient,
+    lemonldap: FakeLemonLDAP,
+    cozy_stack: FakeCozyStack,
+    drive: str,
+    database_url: str,
+) -> None:
+    await consent_with_drive(client, lemonldap, cozy_stack, MMAUDET)
+
+    await remove_delegation(database_url, MMAUDET)
+
+    assert await database_dump(database_url) == ""
+
+
 async def test_a_consent_without_a_drive_instance_completes_for_lemonldap_alone(
     client: AsyncClient, lemonldap: FakeLemonLDAP
 ) -> None:
