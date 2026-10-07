@@ -145,7 +145,7 @@ async def test_an_expired_delegation_is_refused_with_the_consent_link(
         "detail": "The user's consent to their agent is no longer valid: they must open the"
         " consent link again.",
         "code": "delegation_expired",
-        "consent_url": f"{PUBLIC_BASE_URL}/consent",
+        "consent_url": f"{PUBLIC_BASE_URL}/consent?owner=mmaudet%40example.test",
     }
 
 
@@ -197,6 +197,13 @@ async def test_a_revoked_delegation_keeps_answering_delegation_expired(
     assert response.json()["code"] == "delegation_expired"
 
 
+async def test_the_consent_link_names_the_owner_as_apisix_does(client: AsyncClient) -> None:
+    response = await client.get("/forward-auth", headers=as_agent_of("Alice@Example.TEST"))
+
+    consent_url = response.json()["consent_url"]
+    assert consent_url == f"{PUBLIC_BASE_URL}/consent?owner=Alice%40Example.TEST"
+
+
 async def test_an_owner_who_never_consented_is_refused_with_the_consent_link(
     client: AsyncClient, lemonldap: FakeLemonLDAP
 ) -> None:
@@ -213,7 +220,7 @@ async def test_an_owner_who_never_consented_is_refused_with_the_consent_link(
         "detail": "The user has not let their agent act for them yet: they must open the consent"
         " link.",
         "code": "delegation_missing",
-        "consent_url": f"{PUBLIC_BASE_URL}/consent",
+        "consent_url": f"{PUBLIC_BASE_URL}/consent?owner=alice%40example.test",
     }
 
 
@@ -437,7 +444,7 @@ async def test_a_drive_route_of_an_owner_who_never_accepted_on_their_instance_ge
         "detail": "The user has not let their agent act for them yet: they must open the consent"
         " link.",
         "code": "delegation_missing",
-        "consent_url": f"{PUBLIC_BASE_URL}/consent",
+        "consent_url": f"{PUBLIC_BASE_URL}/consent?owner=mmaudet%40example.test",
     }
 
 
@@ -544,7 +551,9 @@ async def test_a_drive_delegation_the_owner_removed_from_their_instance_is_refus
 
     assert response.status_code == 401
     assert response.json()["code"] == "delegation_expired"
-    assert response.json()["consent_url"] == f"{PUBLIC_BASE_URL}/consent"
+    assert (
+        response.json()["consent_url"] == f"{PUBLIC_BASE_URL}/consent?owner=mmaudet%40example.test"
+    )
 
 
 async def test_a_drive_route_of_an_owner_whose_lemonldap_delegation_ended_is_refused(

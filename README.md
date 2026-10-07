@@ -10,7 +10,7 @@ Twake Drive accepts only tokens of the owner's own instance, a cozy-stack. The s
 
 | Request | Answer |
 |---|---|
-| `GET /consent?owner=<email>` | the consent link bound to its owner: a redirect to LemonLDAP |
+| `GET /consent?owner=<email>` | the consent link bound to its owner, as the problems below give it: a redirect to LemonLDAP |
 | `GET /consent` | the plain consent link, the same for every user: a redirect to LemonLDAP |
 | `GET /callback` | where LemonLDAP, then the user's Drive instance, send the user back: a short page in French |
 
@@ -60,7 +60,7 @@ Every error is an [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem (`a
 | 502 | `lemonldap_unavailable` | LemonLDAP gave no usable answer, or answered another error |
 | 502 | `drive_unavailable` | on a Drive route, the owner's Drive instance gave no usable answer |
 
-- Both 401 problems carry the consent link in `consent_url`, for the agent to send to its owner.
+- Both 401 problems carry the consent link bound to the owner in `consent_url`, for the agent to send to them.
 - APISIX passes an error's status and body on to the agent. List `Content-Type` in the plugin's `client_headers` to keep `application/problem+json`.
 - Routing errors, such as an unknown path, use the same format, with a `code` named after their HTTP status (`not_found`, `method_not_allowed`).
 

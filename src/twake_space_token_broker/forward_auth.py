@@ -5,6 +5,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Response
 
+from twake_space_token_broker.consent_links import consent_link
 from twake_space_token_broker.cozy_stack import InstanceUnavailable
 from twake_space_token_broker.drive import DriveAccess, DriveTokens
 from twake_space_token_broker.lemonldap import LemonLDAP, LemonLDAPUnavailable
@@ -86,7 +87,7 @@ def router(
                 title="Delegation missing",
                 detail="The user has not let their agent act for them yet: they must open the"
                 " consent link.",
-                extensions={"consent_url": consent_url},
+                extensions={"consent_url": consent_link(owner, consent_url)},
             ) from missing
         except DelegationExpired as expired:
             raise Problem(
@@ -95,7 +96,7 @@ def router(
                 title="Delegation expired",
                 detail="The user's consent to their agent is no longer valid: they must open"
                 " the consent link again.",
-                extensions={"consent_url": consent_url},
+                extensions={"consent_url": consent_link(owner, consent_url)},
             ) from expired
         except LemonLDAPUnavailable as unavailable:
             logger.warning("LemonLDAP failed the forward-auth of %s: %s", owner, unavailable)
