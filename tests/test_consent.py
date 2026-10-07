@@ -5,7 +5,9 @@ import pytest
 from httpx import URL, AsyncClient, Response
 
 from tests.conftest import (
+    ALICE,
     CLIENT_ID,
+    DRIVE_INSTANCE_DOMAIN,
     ISSUER,
     MMAUDET,
     MMAUDET_DRIVE,
@@ -58,10 +60,96 @@ async def test_consent_sends_the_user_to_lemonldap_with_pkce(client: AsyncClient
 
 
 async def test_consent_asks_lemonldap_for_a_fresh_login(client: AsyncClient) -> None:
-    """A browser still signed in as someone else must not consent for them without a word."""
+    """The plain link names nobody, so a browser signed in as someone else must sign in again.
+
+    LemonLDAP's "stay connected" defeats it, since that login counts as a fresh one: owners get
+    their own link instead.
+    """
     response = await client.get("/consent")
 
     assert URL(response.headers["location"]).params.get("prompt") == "login"
+
+
+async def test_a_consent_link_for_its_owner_asks_for_no_fresh_login(client: AsyncClient) -> None:
+    """A fresh login proves nothing once LemonLDAP keeps a browser signed in ("stay connected"):
+    the callback checks who signed in instead, so an owner already signed in consents at once."""
+    response = await client.get("/consent", params={"owner": MMAUDET})
+
+    location = URL(response.headers["location"])
+    assert "prompt" not in location.params
+    assert location.params["login_hint"] == MMAUDET
+
+
+async def test_a_consent_link_signed_in_as_someone_else_stores_nothing(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, database_url: str
+) -> None:
+    """The browser is still signed in as another account, as LemonLDAP's "stay connected" does."""
+    started = await client.get("/consent", params={"owner": MMAUDET})
+
+    response = await client.get(lemonldap.sign_in(started.headers["location"], ALICE))
+
+    assert response.status_code == 403
+    assert response.headers["content-type"].startswith("text/html")
+    assert MMAUDET in response.text
+    assert ALICE in response.text
+    assert await database_dump(database_url) == ""
+
+
+async def test_a_consent_link_signed_in_as_someone_else_leaves_their_delegations_alone(
+    client: AsyncClient,
+    lemonldap: FakeLemonLDAP,
+    cozy_stack: FakeCozyStack,
+    database_url: str,
+) -> None:
+    alice_drive = f"alice.{DRIVE_INSTANCE_DOMAIN}"
+    cozy_stack.create_instance(alice_drive)
+    lemonldap.workplaces[ALICE] = alice_drive
+    await consent_with_drive(client, lemonldap, cozy_stack, ALICE)
+    before = await database_dump(database_url)
+    client.cookies.clear()
+    started = await client.get("/consent", params={"owner": MMAUDET})
+
+    await client.get(lemonldap.sign_in(started.headers["location"], ALICE))
+
+    assert await database_dump(database_url) == before
+
+
+async def test_an_owner_already_signed_in_consents_through_their_link_drive_included(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, cozy_stack: FakeCozyStack, drive: str
+) -> None:
+    started = await client.get("/consent", params={"owner": MMAUDET})
+    to_drive = await client.get(lemonldap.sign_in(started.headers["location"], MMAUDET))
+
+    response = await client.get(cozy_stack.authorize(to_drive.headers["location"]))
+
+    assert response.status_code == 200
+    assert "Votre assistant est autorisé" in response.text
+    agent = await client.get(
+        "/forward-auth", params={"token": "drive"}, headers=as_agent_of(MMAUDET)
+    )
+    assert agent.status_code == 200
+
+
+async def test_a_consent_link_is_bound_to_its_owner_exactly(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, database_url: str
+) -> None:
+    """The broker keys a delegation by the email exactly as LemonLDAP gives it, and looks it up
+    exactly as APISIX names the owner: an owner in another case would never find it."""
+    started = await client.get("/consent", params={"owner": MMAUDET.upper()})
+
+    response = await client.get(lemonldap.sign_in(started.headers["location"], MMAUDET))
+
+    assert response.status_code == 403
+    assert await database_dump(database_url) == ""
+
+
+async def test_a_consent_link_naming_anyone_is_bound_to_them(client: AsyncClient) -> None:
+    """A link that names its owner badly fails at the callback, never quietly as the plain one."""
+    response = await client.get("/consent", params={"owner": "mmaudet"})
+
+    location = URL(response.headers["location"])
+    assert "prompt" not in location.params
+    assert location.params["login_hint"] == "mmaudet"
 
 
 async def test_consent_stores_the_users_refresh_token_encrypted(

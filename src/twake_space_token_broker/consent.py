@@ -1,7 +1,8 @@
-"""The fixed consent link, through which a user lets their agent act for them.
+"""The consent link, through which a user lets their agent act for them.
 
 The consent runs in two steps that both come back to /callback: the user signs in to LemonLDAP,
-then, when LemonLDAP names their Drive instance, lets the broker in on that instance.
+then, when LemonLDAP names their Drive instance, lets the broker in on that instance. A link bound
+to its owner checks that the account that signed in is theirs.
 """
 
 import logging
@@ -13,6 +14,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Cookie
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
+from twake_space_token_broker.consent_links import CONSENT, consent_link
 from twake_space_token_broker.cozy_stack import InstanceRefused, InstanceUnavailable
 from twake_space_token_broker.drive import DriveTokens
 from twake_space_token_broker.keys import Signer
@@ -37,9 +39,15 @@ DRIVE_STEP = "drive"
 UNAVAILABLE = "Votre instance Drive n'a pas pu terminer l'autorisation."
 
 
-def _page(title: str, message: str, *, retry: bool = False, status_code: int = 200) -> HTMLResponse:
-    """A short page in French. Its title and message are text, which the page escapes."""
-    link = '\n<p><a href="/consent">Recommencer</a></p>' if retry else ""
+def _page(
+    title: str, message: str, *, retry_url: str | None = None, status_code: int = 200
+) -> HTMLResponse:
+    """A short page in French.
+
+    Its title and message are text, which the page escapes. With a retry URL, a link lets the user
+    start the consent over.
+    """
+    link = f'\n<p><a href="{escape(retry_url)}">Recommencer</a></p>' if retry_url else ""
     return HTMLResponse(
         f"""<!doctype html>
 <html lang="fr">
@@ -60,8 +68,10 @@ def _page(title: str, message: str, *, retry: bool = False, status_code: int = 2
     )
 
 
-def _refused(reason: str, *, status_code: int = 400) -> HTMLResponse:
-    response = _page("L'autorisation n'a pas abouti", reason, retry=True, status_code=status_code)
+def _refused(reason: str, *, retry_url: str, status_code: int = 400) -> HTMLResponse:
+    response = _page(
+        "L'autorisation n'a pas abouti", reason, retry_url=CONSENT, status_code=status_code
+    )
     response.delete_cookie(COOKIE)
     return response
 
@@ -72,17 +82,39 @@ def _authorized(message: str) -> HTMLResponse:
     return response
 
 
-def _without_drive(user: str, reason: str, *, status_code: int) -> HTMLResponse:
+def _without_drive(user: str, reason: str, *, retry_url: str, status_code: int) -> HTMLResponse:
     """The user's agent may act for them, but not in Drive: they learn why, and may retry."""
     response = _page(
         "Votre assistant est autorisé, sauf dans Drive",
         f"Votre assistant Twake Space peut désormais agir pour {user}, mais pas dans Drive."
         f" {reason}",
-        retry=True,
+        retry_url=CONSENT,
         status_code=status_code,
     )
     response.delete_cookie(COOKIE)
     return response
+
+
+def _wrong_account(owner: str, signed_in: str) -> HTMLResponse:
+    """The browser is signed in as another account than the one the link is for."""
+    response = _page(
+        "Ce lien est pour un autre compte",
+        f"Ce lien autorise l'assistant de {owner}, mais ce navigateur est connecté à Twake en"
+        f" tant que {signed_in} : rien n'a été enregistré. Ouvrez ce lien dans une fenêtre de"
+        f" navigation privée, puis connectez-vous en tant que {owner}.",
+        retry_url=consent_link(owner),
+        status_code=403,
+    )
+    response.delete_cookie(COOKIE)
+    return response
+
+
+def _owner(value: str | None) -> str | None:
+    """The owner a consent link names, or None for the plain link.
+
+    It is kept exactly as given, as the broker keys and looks up delegations by email exactly.
+    """
+    return (value or "").strip() or None
 
 
 def _same_state(flow: dict[str, Any], state: str | None) -> bool:
@@ -110,15 +142,17 @@ def router(
             samesite="lax",
         )
 
-    @routes.get("/consent")
-    async def consent() -> RedirectResponse:
+    @routes.get(CONSENT)
+    async def consent(owner: str | None = None) -> RedirectResponse:
+        """Starts a consent, bound to its owner when the link names them."""
+        owner = _owner(owner)
         state = secrets.token_urlsafe(32)
         verifier = secrets.token_urlsafe(48)
         response = RedirectResponse(
-            lemonldap.authorize_url(state=state, verifier=verifier),
+            lemonldap.authorize_url(state=state, verifier=verifier, owner=owner),
             status_code=302,
         )
-        remember(response, {"state": state, "verifier": verifier})
+        remember(response, {"state": state, "verifier": verifier, "owner": owner})
         return response
 
     @routes.get("/callback")
@@ -129,27 +163,45 @@ def router(
     ) -> Response:
         flow = signer.verify(started) if started else None
         if flow is None:
-            return _refused("Aucune autorisation n'est en cours dans ce navigateur.")
+            return _refused(
+                "Aucune autorisation n'est en cours dans ce navigateur.", retry_url=CONSENT
+            )
         if clock() >= flow["expires"]:
-            return _refused("L'autorisation a expiré.")
+            return _refused("L'autorisation a expiré.", retry_url=CONSENT)
         if flow.get("step") == DRIVE_STEP:
             return await drive_callback(flow, code, state)
         if not _same_state(flow, state):
-            return _refused("Cette page ne correspond pas à l'autorisation en cours.")
+            return _refused(
+                "Cette page ne correspond pas à l'autorisation en cours.", retry_url=CONSENT
+            )
         if code is None:
-            return _refused("LemonLDAP n'a pas accordé l'autorisation.")
+            return _refused("LemonLDAP n'a pas accordé l'autorisation.", retry_url=CONSENT)
         try:
             signed_in = await lemonldap.redeem(code, flow["verifier"])
         except GrantRefused:
-            return _refused("LemonLDAP a refusé le code d'autorisation.")
+            return _refused("LemonLDAP a refusé le code d'autorisation.", retry_url=CONSENT)
         except LemonLDAPUnavailable as unavailable:
             logger.warning("LemonLDAP completed no consent: %s", unavailable)
-            return _refused("LemonLDAP n'a pas pu terminer l'autorisation.", status_code=502)
+            return _refused(
+                "LemonLDAP n'a pas pu terminer l'autorisation.",
+                retry_url=CONSENT,
+                status_code=502,
+            )
         except OfflineAccessDenied:
             logger.warning("LemonLDAP granted no offline access: check the client's options")
             return _refused(
-                "LemonLDAP n'a pas accordé d'accès hors ligne à l'assistant.", status_code=502
+                "LemonLDAP n'a pas accordé d'accès hors ligne à l'assistant.",
+                retry_url=CONSENT,
+                status_code=502,
             )
+        owner = flow.get("owner")
+        if owner is not None and signed_in.user != owner:
+            # A browser still signed in as someone else, as LemonLDAP's "stay connected" keeps it:
+            # nothing is stored, and that account's own delegations stay as they were
+            logger.warning(
+                "A consent for %s came back signed in as %s: nothing stored", owner, signed_in.user
+            )
+            return _wrong_account(owner, signed_in.user)
         await access_tokens.consented(signed_in)
         # The new consent replaces the whole delegation: Drive comes back only if granted again
         await drive_tokens.forget(signed_in.user)
@@ -180,11 +232,16 @@ def router(
             logger.warning(
                 "The Drive instance of %s took no client: %s", signed_in.user, unavailable
             )
-            return _without_drive(signed_in.user, UNAVAILABLE, status_code=502)
+            return _without_drive(signed_in.user, UNAVAILABLE, retry_url=CONSENT, status_code=502)
         response = RedirectResponse(authorize_url, status_code=302)
         remember(
             response,
-            {"step": DRIVE_STEP, "user": signed_in.user, "state": state, "verifier": verifier},
+            {
+                "step": DRIVE_STEP,
+                "user": signed_in.user,
+                "state": state,
+                "verifier": verifier,
+            },
         )
         return response
 
@@ -195,21 +252,29 @@ def router(
             # The instance's page links back with no state when the user declines: the answer
             # changes nothing the broker keeps
             return _without_drive(
-                user, "Vous n'avez pas accordé l'accès à vos fichiers.", status_code=200
+                user,
+                "Vous n'avez pas accordé l'accès à vos fichiers.",
+                status_code=200,
+                retry_url=CONSENT,
             )
         if not _same_state(flow, state):
-            return _refused("Cette page ne correspond pas à l'autorisation en cours.")
+            return _refused(
+                "Cette page ne correspond pas à l'autorisation en cours.", retry_url=CONSENT
+            )
         try:
             await drive_tokens.consented(user, code, flow["verifier"])
         except DelegationMissing:
-            return _refused("Cette autorisation n'est plus en cours.")
+            return _refused("Cette autorisation n'est plus en cours.", retry_url=CONSENT)
         except InstanceRefused:
             return _without_drive(
-                user, "Votre instance Drive a refusé le code d'autorisation.", status_code=400
+                user,
+                "Votre instance Drive a refusé le code d'autorisation.",
+                status_code=400,
+                retry_url=CONSENT,
             )
         except InstanceUnavailable as unavailable:
             logger.warning("The Drive instance of %s completed no consent: %s", user, unavailable)
-            return _without_drive(user, UNAVAILABLE, status_code=502)
+            return _without_drive(user, UNAVAILABLE, status_code=502, retry_url=CONSENT)
         return _authorized(
             f"Votre assistant Twake Space peut désormais agir pour {user}, y compris dans Drive."
         )
