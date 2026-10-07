@@ -76,22 +76,28 @@ class LemonLDAP:
     def _endpoint(self, path: str) -> str:
         return f"{self._settings.issuer.rstrip('/')}/oauth2/{path}"
 
-    def authorize_url(self, *, state: str, verifier: str) -> str:
-        """Where the user signs in, to grant the broker offline access with PKCE."""
-        query = urlencode(
-            {
-                "response_type": "code",
-                "client_id": self._settings.client_id,
-                "redirect_uri": self._settings.redirect_uri,
-                "scope": SCOPE,
-                "state": state,
-                "code_challenge": pkce.challenge(verifier),
-                "code_challenge_method": "S256",
-                # Signs in again even with an open SSO session, which may be someone else's
-                "prompt": "login",
-            }
-        )
-        return f"{self._endpoint('authorize')}?{query}"
+    def authorize_url(self, *, state: str, verifier: str, owner: str | None = None) -> str:
+        """Where the user signs in, to grant the broker offline access with PKCE.
+
+        For a consent link bound to its owner, the callback checks who signed in, so an open SSO
+        session of the owner serves as is. Otherwise LemonLDAP has the user sign in again, which
+        its "stay connected" defeats: that login counts as a fresh one.
+        """
+        params = {
+            "response_type": "code",
+            "client_id": self._settings.client_id,
+            "redirect_uri": self._settings.redirect_uri,
+            "scope": SCOPE,
+            "state": state,
+            "code_challenge": pkce.challenge(verifier),
+            "code_challenge_method": "S256",
+        }
+        if owner is None:
+            # An open SSO session may be someone else's
+            params["prompt"] = "login"
+        else:
+            params["login_hint"] = owner
+        return f"{self._endpoint('authorize')}?{urlencode(params)}"
 
     async def redeem(self, code: str, verifier: str) -> SignedIn:
         """Exchanges the code LemonLDAP sent the user back with for their tokens."""

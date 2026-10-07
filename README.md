@@ -2,7 +2,7 @@
 
 Keeps Twake Space users' delegated tokens for their personal agents.
 
-A personal agent never holds a credential. Its owner consents once, through a fixed link, and the broker keeps the owner's LemonLDAP refresh token, encrypted. When the agent calls a contract through APISIX, APISIX asks the broker for a fresh access token of the agent's owner, through forward-auth, and passes it on to the contract.
+A personal agent never holds a credential. Its owner consents once, through their own consent link, and the broker keeps the owner's LemonLDAP refresh token, encrypted. When the agent calls a contract through APISIX, APISIX asks the broker for a fresh access token of the agent's owner, through forward-auth, and passes it on to the contract.
 
 Twake Drive accepts only tokens of the owner's own instance, a cozy-stack. The same consent also lets the broker in on that instance, and the routes of Drive contracts get a token of it as well.
 
@@ -10,14 +10,17 @@ Twake Drive accepts only tokens of the owner's own instance, a cozy-stack. The s
 
 | Request | Answer |
 |---|---|
-| `GET /consent` | the fixed consent link, the same for every user: a redirect to LemonLDAP |
+| `GET /consent?owner=<email>` | the consent link bound to its owner, as the problems below give it: a redirect to LemonLDAP |
+| `GET /consent` | the plain consent link, the same for every user: a redirect to LemonLDAP |
 | `GET /callback` | where LemonLDAP, then the user's Drive instance, send the user back: a short page in French |
 
-- The consent signs the user in with the `twake-space-agents` client: an authorization code with PKCE (S256) and the scope `openid email offline_access`. The state and the PKCE verifier wait in a signed, HttpOnly cookie for 10 minutes.
-- It asks for `prompt=login`, so LemonLDAP has the user sign in again even when an SSO session is open: a browser still signed in as someone else cannot consent for them unnoticed.
+- The consent signs the user in with the `twake-space-agents` client: an authorization code with PKCE (S256) and the scope `openid email offline_access`. The state and the PKCE verifier wait in a signed, HttpOnly cookie. The consent lasts 10 minutes, but the browser keeps the cookie an hour, so that an expired consent still starts over from the owner's link.
+- A browser holds one consent at a time: opening a consent link again while one is in progress replaces it, and the first one then ends on a page saying it no longer matches the consent in progress.
 - The callback checks the state, then exchanges the code with `client_secret_basic`. It stores the refresh token under the user's email, which is the `sub` of the ID token on Twake's LemonLDAP.
+- The owner's link asks LemonLDAP for no new login and passes the owner as `login_hint`, so an owner already signed in consents in one go. The callback then checks that the account that signed in is the owner, exactly as the link names them, since delegations are keyed by that email. If it is not, it stores nothing, leaves that account's delegations as they were, and asks the user to open the link in a private window and sign in as the owner. That account keeps an offline session in LemonLDAP that nothing holds: LemonLDAP 2.21 cannot revoke it.
+- The plain link asks for `prompt=login`, so LemonLDAP has the user sign in again when an SSO session is open, through its unstyled "Upgrade session" page. LemonLDAP's "stay connected" defeats it: its login counts as a fresh one, so a browser that remembers another account can still consent for that account unnoticed. Give users their own link.
 - Consenting again replaces the stored token.
-- When something fails, the page says why, with a link to start over.
+- When something fails, the page says why, with a link to start over: the owner's link again, when the consent started from it.
 
 ### Drive
 
@@ -57,7 +60,7 @@ Every error is an [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem (`a
 | 502 | `lemonldap_unavailable` | LemonLDAP gave no usable answer, or answered another error |
 | 502 | `drive_unavailable` | on a Drive route, the owner's Drive instance gave no usable answer |
 
-- Both 401 problems carry the consent link in `consent_url`, for the agent to send to its owner.
+- Both 401 problems carry the consent link bound to the owner in `consent_url`, for the agent to send to them.
 - APISIX passes an error's status and body on to the agent. List `Content-Type` in the plugin's `client_headers` to keep `application/problem+json`.
 - Routing errors, such as an unknown path, use the same format, with a `code` named after their HTTP status (`not_found`, `method_not_allowed`).
 
