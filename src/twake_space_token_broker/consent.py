@@ -33,6 +33,13 @@ COOKIE = "twake_space_consent"
 COOKIE_LIFETIME = 600
 """Seconds a user has to sign in once the consent has started, and to accept on their Drive."""
 
+COOKIE_KEPT = 3600
+"""Seconds the browser keeps the cookie of a consent.
+
+Longer than the consent lasts, so that a consent that expired still starts over from its owner's
+link.
+"""
+
 DRIVE_STEP = "drive"
 """The step of a consent in progress whose user is on their Drive instance."""
 
@@ -70,7 +77,7 @@ def _page(
 
 def _refused(reason: str, *, retry_url: str, status_code: int = 400) -> HTMLResponse:
     response = _page(
-        "L'autorisation n'a pas abouti", reason, retry_url=CONSENT, status_code=status_code
+        "L'autorisation n'a pas abouti", reason, retry_url=retry_url, status_code=status_code
     )
     response.delete_cookie(COOKIE)
     return response
@@ -88,7 +95,7 @@ def _without_drive(user: str, reason: str, *, retry_url: str, status_code: int) 
         "Votre assistant est autorisé, sauf dans Drive",
         f"Votre assistant Twake Space peut désormais agir pour {user}, mais pas dans Drive."
         f" {reason}",
-        retry_url=CONSENT,
+        retry_url=retry_url,
         status_code=status_code,
     )
     response.delete_cookie(COOKIE)
@@ -107,6 +114,11 @@ def _wrong_account(owner: str, signed_in: str) -> HTMLResponse:
     )
     response.delete_cookie(COOKIE)
     return response
+
+
+def _retry_url(owner: str | None) -> str:
+    """Where a failed consent starts over: from its owner's link, when it had one."""
+    return consent_link(owner) if owner else CONSENT
 
 
 def _owner(value: str | None) -> str | None:
@@ -136,7 +148,7 @@ def router(
         response.set_cookie(
             COOKIE,
             signer.sign({**flow, "expires": expires}),
-            max_age=COOKIE_LIFETIME,
+            max_age=COOKIE_KEPT,
             httponly=True,
             secure=True,
             samesite="lax",
@@ -166,32 +178,33 @@ def router(
             return _refused(
                 "Aucune autorisation n'est en cours dans ce navigateur.", retry_url=CONSENT
             )
+        retry_url = _retry_url(flow.get("owner"))
         if clock() >= flow["expires"]:
-            return _refused("L'autorisation a expiré.", retry_url=CONSENT)
+            return _refused("L'autorisation a expiré.", retry_url=retry_url)
         if flow.get("step") == DRIVE_STEP:
             return await drive_callback(flow, code, state)
         if not _same_state(flow, state):
             return _refused(
-                "Cette page ne correspond pas à l'autorisation en cours.", retry_url=CONSENT
+                "Cette page ne correspond pas à l'autorisation en cours.", retry_url=retry_url
             )
         if code is None:
-            return _refused("LemonLDAP n'a pas accordé l'autorisation.", retry_url=CONSENT)
+            return _refused("LemonLDAP n'a pas accordé l'autorisation.", retry_url=retry_url)
         try:
             signed_in = await lemonldap.redeem(code, flow["verifier"])
         except GrantRefused:
-            return _refused("LemonLDAP a refusé le code d'autorisation.", retry_url=CONSENT)
+            return _refused("LemonLDAP a refusé le code d'autorisation.", retry_url=retry_url)
         except LemonLDAPUnavailable as unavailable:
             logger.warning("LemonLDAP completed no consent: %s", unavailable)
             return _refused(
                 "LemonLDAP n'a pas pu terminer l'autorisation.",
-                retry_url=CONSENT,
+                retry_url=retry_url,
                 status_code=502,
             )
         except OfflineAccessDenied:
             logger.warning("LemonLDAP granted no offline access: check the client's options")
             return _refused(
                 "LemonLDAP n'a pas accordé d'accès hors ligne à l'assistant.",
-                retry_url=CONSENT,
+                retry_url=retry_url,
                 status_code=502,
             )
         owner = flow.get("owner")
@@ -205,10 +218,13 @@ def router(
         await access_tokens.consented(signed_in)
         # The new consent replaces the whole delegation: Drive comes back only if granted again
         await drive_tokens.forget(signed_in.user)
-        return await to_drive(signed_in)
+        return await to_drive(signed_in, owner)
 
-    async def to_drive(signed_in: SignedIn) -> Response:
-        """Sends the user on to their Drive instance, if LemonLDAP names one."""
+    async def to_drive(signed_in: SignedIn, owner: str | None) -> Response:
+        """Sends the user on to their Drive instance, if LemonLDAP names one.
+
+        A consent bound to its owner stays bound through the Drive step.
+        """
         try:
             instance = await lemonldap.drive_instance(signed_in.tokens.access_token)
         except LemonLDAPUnavailable as unavailable:
@@ -232,13 +248,16 @@ def router(
             logger.warning(
                 "The Drive instance of %s took no client: %s", signed_in.user, unavailable
             )
-            return _without_drive(signed_in.user, UNAVAILABLE, retry_url=CONSENT, status_code=502)
+            return _without_drive(
+                signed_in.user, UNAVAILABLE, retry_url=_retry_url(owner), status_code=502
+            )
         response = RedirectResponse(authorize_url, status_code=302)
         remember(
             response,
             {
                 "step": DRIVE_STEP,
                 "user": signed_in.user,
+                "owner": owner,
                 "state": state,
                 "verifier": verifier,
             },
@@ -248,6 +267,7 @@ def router(
     async def drive_callback(flow: dict[str, Any], code: str | None, state: str | None) -> Response:
         """Where the user's Drive instance sends them back."""
         user = flow["user"]
+        retry_url = _retry_url(flow.get("owner"))
         if code is None:
             # The instance's page links back with no state when the user declines: the answer
             # changes nothing the broker keeps
@@ -255,26 +275,26 @@ def router(
                 user,
                 "Vous n'avez pas accordé l'accès à vos fichiers.",
                 status_code=200,
-                retry_url=CONSENT,
+                retry_url=retry_url,
             )
         if not _same_state(flow, state):
             return _refused(
-                "Cette page ne correspond pas à l'autorisation en cours.", retry_url=CONSENT
+                "Cette page ne correspond pas à l'autorisation en cours.", retry_url=retry_url
             )
         try:
             await drive_tokens.consented(user, code, flow["verifier"])
         except DelegationMissing:
-            return _refused("Cette autorisation n'est plus en cours.", retry_url=CONSENT)
+            return _refused("Cette autorisation n'est plus en cours.", retry_url=retry_url)
         except InstanceRefused:
             return _without_drive(
                 user,
                 "Votre instance Drive a refusé le code d'autorisation.",
                 status_code=400,
-                retry_url=CONSENT,
+                retry_url=retry_url,
             )
         except InstanceUnavailable as unavailable:
             logger.warning("The Drive instance of %s completed no consent: %s", user, unavailable)
-            return _without_drive(user, UNAVAILABLE, status_code=502, retry_url=CONSENT)
+            return _without_drive(user, UNAVAILABLE, status_code=502, retry_url=retry_url)
         return _authorized(
             f"Votre assistant Twake Space peut désormais agir pour {user}, y compris dans Drive."
         )

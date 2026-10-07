@@ -14,13 +14,13 @@ Twake Drive accepts only tokens of the owner's own instance, a cozy-stack. The s
 | `GET /consent` | the plain consent link, the same for every user: a redirect to LemonLDAP |
 | `GET /callback` | where LemonLDAP, then the user's Drive instance, send the user back: a short page in French |
 
-- The consent signs the user in with the `twake-space-agents` client: an authorization code with PKCE (S256) and the scope `openid email offline_access`. The state and the PKCE verifier wait in a signed, HttpOnly cookie. The consent lasts 10 minutes.
+- The consent signs the user in with the `twake-space-agents` client: an authorization code with PKCE (S256) and the scope `openid email offline_access`. The state and the PKCE verifier wait in a signed, HttpOnly cookie. The consent lasts 10 minutes, but the browser keeps the cookie an hour, so that an expired consent still starts over from the owner's link.
 - A browser holds one consent at a time: opening a consent link again while one is in progress replaces it, and the first one then ends on a page saying it no longer matches the consent in progress.
 - The callback checks the state, then exchanges the code with `client_secret_basic`. It stores the refresh token under the user's email, which is the `sub` of the ID token on Twake's LemonLDAP.
 - The owner's link asks LemonLDAP for no new login and passes the owner as `login_hint`, so an owner already signed in consents in one go. The callback then checks that the account that signed in is the owner, exactly as the link names them, since delegations are keyed by that email. If it is not, it stores nothing, leaves that account's delegations as they were, and asks the user to open the link in a private window and sign in as the owner. That account keeps an offline session in LemonLDAP that nothing holds: LemonLDAP 2.21 cannot revoke it.
 - The plain link asks for `prompt=login`, so LemonLDAP has the user sign in again when an SSO session is open, through its unstyled "Upgrade session" page. LemonLDAP's "stay connected" defeats it: its login counts as a fresh one, so a browser that remembers another account can still consent for that account unnoticed. Give users their own link.
 - Consenting again replaces the stored token.
-- When something fails, the page says why, with a link to start over.
+- When something fails, the page says why, with a link to start over: the owner's link again, when the consent started from it.
 
 ### Drive
 

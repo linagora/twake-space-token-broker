@@ -24,20 +24,27 @@ from tests.fake_cozy_stack import FakeCozyStack
 from tests.fake_lemonldap import FakeLemonLDAP
 from twake_space_token_broker.settings import Settings
 
+OWNERS_LINK = "/consent?owner=mmaudet%40example.test"
+"""MMAUDET's own consent link, relative to the broker."""
 
-def assert_consent_failed(response: Response, status_code: int = 400) -> None:
+
+def assert_consent_failed(
+    response: Response, status_code: int = 400, link: str = "/consent"
+) -> None:
     """The user sees why, in French, with a link to start over."""
     assert response.status_code == status_code
     assert response.headers["content-type"].startswith("text/html")
-    assert 'href="/consent"' in response.text
+    assert f'href="{link}"' in response.text
 
 
-def assert_authorized_without_drive(response: Response, status_code: int) -> None:
+def assert_authorized_without_drive(
+    response: Response, status_code: int, link: str = "/consent"
+) -> None:
     """The user learns that their agent may act for them, though not in Drive, and may retry."""
     assert response.status_code == status_code
     assert response.headers["content-type"].startswith("text/html")
     assert "sauf dans Drive" in response.text
-    assert 'href="/consent"' in response.text
+    assert f'href="{link}"' in response.text
 
 
 async def test_consent_sends_the_user_to_lemonldap_with_pkce(client: AsyncClient) -> None:
@@ -55,7 +62,7 @@ async def test_consent_sends_the_user_to_lemonldap_with_pkce(client: AsyncClient
     assert location.params["state"]
     cookie = response.headers["set-cookie"].lower()
     assert all(
-        attribute in cookie for attribute in ("httponly", "secure", "samesite=lax", "max-age=600")
+        attribute in cookie for attribute in ("httponly", "secure", "samesite=lax", "max-age=3600")
     )
 
 
@@ -202,6 +209,18 @@ async def test_a_consent_left_for_more_than_ten_minutes_is_refused(
     response = await client.get(callback)
 
     assert_consent_failed(response)
+
+
+async def test_a_failed_consent_for_its_owner_starts_over_from_the_owners_link(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, clock: FakeClock
+) -> None:
+    started = await client.get("/consent", params={"owner": MMAUDET})
+    callback = lemonldap.sign_in(started.headers["location"], MMAUDET)
+    clock.advance(601)
+
+    response = await client.get(callback)
+
+    assert_consent_failed(response, link=OWNERS_LINK)
 
 
 async def test_a_sign_in_lemonldap_turned_down_is_refused(
@@ -392,6 +411,17 @@ async def test_an_owner_who_declines_on_their_drive_instance_keeps_the_rest_of_t
     assert_authorized_without_drive(response, 200)
     authorized = await client.get("/forward-auth", headers=as_agent_of(MMAUDET))
     assert authorized.status_code == 200
+
+
+async def test_an_owner_who_declines_on_drive_from_their_link_starts_over_from_it(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, cozy_stack: FakeCozyStack, drive: str
+) -> None:
+    started = await client.get("/consent", params={"owner": MMAUDET})
+    to_drive = await client.get(lemonldap.sign_in(started.headers["location"], MMAUDET))
+
+    response = await client.get(cozy_stack.refuse(to_drive.headers["location"]))
+
+    assert_authorized_without_drive(response, 200, link=OWNERS_LINK)
 
 
 @pytest.mark.parametrize("outage", ["error page", "unreachable"])
