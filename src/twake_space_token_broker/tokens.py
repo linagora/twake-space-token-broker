@@ -86,6 +86,10 @@ class AccessTokens:
         )
         self._cache.keep(signed_in.user, signed_in.tokens.access_token, signed_in.tokens)
 
+    async def consented_at(self, user: str) -> datetime | None:
+        """When the user consented, unless they never did or revoked their delegation since."""
+        return await self._delegations.consented_at(user)
+
     async def revoke(self, user: str) -> None:
         """Revokes the user's delegation, whose agent gets no token from then on."""
         # Under the user's lock, so that a refresh in progress cannot put its token back

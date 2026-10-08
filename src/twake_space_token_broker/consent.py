@@ -217,7 +217,7 @@ def router(
             return _wrong_account(owner, signed_in.user)
         await access_tokens.consented(signed_in)
         # The new consent replaces the whole delegation: Drive comes back only if granted again
-        await drive_tokens.forget(signed_in.user)
+        await drive_tokens.forget_even_if_unavailable(signed_in.user)
         return await to_drive(signed_in, owner)
 
     async def to_drive(signed_in: SignedIn, owner: str | None) -> Response:

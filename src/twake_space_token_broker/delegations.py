@@ -30,13 +30,16 @@ CREATE TABLE IF NOT EXISTS drive_delegations (
 """,
     # The delegations of a broker of before consent dates take their last change as theirs: a
     # refresh changed them only when LemonLDAP rotated the refresh token, which it does only for a
-    # client set to
+    # client set to rotate its refresh tokens
     "ALTER TABLE delegations ADD COLUMN IF NOT EXISTS consented_at timestamptz",
     "UPDATE delegations SET consented_at = updated_at WHERE consented_at IS NULL",
     "ALTER TABLE delegations ALTER COLUMN consented_at SET NOT NULL",
     # A broker of before revocations kept a refresh token in each delegation
     "ALTER TABLE delegations ALTER COLUMN refresh_token DROP NOT NULL",
 )
+
+REVOKED = "refresh_token IS NULL"
+"""The SQL condition met by a revoked delegation, which keeps no refresh token."""
 
 
 @dataclass(frozen=True)
@@ -85,8 +88,7 @@ class Delegations:
         """When the user consented, unless they never did or revoked it since."""
         async with self._pool.connection() as connection:
             cursor = await connection.execute(
-                "SELECT consented_at FROM delegations"
-                " WHERE user_email = %s AND refresh_token IS NOT NULL",
+                f"SELECT consented_at FROM delegations WHERE user_email = %s AND NOT ({REVOKED})",
                 (user,),
             )
             row = await cursor.fetchone()
@@ -106,14 +108,13 @@ class Delegations:
         """Forgets the user's revoked delegation, unless they consented again since."""
         async with self._pool.connection() as connection:
             await connection.execute(
-                "DELETE FROM delegations WHERE user_email = %s AND refresh_token IS NULL", (user,)
+                f"DELETE FROM delegations WHERE user_email = %s AND {REVOKED}", (user,)
             )
 
     async def refresh_token_of(self, user: str) -> str | None:
         async with self._pool.connection() as connection:
             cursor = await connection.execute(
-                "SELECT refresh_token FROM delegations"
-                " WHERE user_email = %s AND refresh_token IS NOT NULL",
+                f"SELECT refresh_token FROM delegations WHERE user_email = %s AND NOT ({REVOKED})",
                 (user,),
             )
             row = await cursor.fetchone()
@@ -141,7 +142,7 @@ class Delegations:
         async with self._pool.connection() as connection:
             cursor = await connection.execute(
                 "SELECT credentials FROM drive_delegations JOIN delegations USING (user_email)"
-                " WHERE user_email = %s AND refresh_token IS NOT NULL",
+                f" WHERE user_email = %s AND NOT ({REVOKED})",
                 (user,),
             )
             row = await cursor.fetchone()
