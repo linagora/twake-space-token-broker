@@ -7,7 +7,7 @@ import httpx
 from fastapi import FastAPI
 from psycopg_pool import AsyncConnectionPool
 
-from twake_space_token_broker import consent, forward_auth, problems
+from twake_space_token_broker import consent, delegation, forward_auth, problems
 from twake_space_token_broker.cozy_stack import CozyStack
 from twake_space_token_broker.delegations import Delegations
 from twake_space_token_broker.drive import DriveTokens
@@ -65,6 +65,13 @@ def create_app(
     )
     app.include_router(
         forward_auth.router(access_tokens, drive_tokens, lemonldap, settings.consent_url)
+    )
+    app.include_router(
+        delegation.router(
+            delegations,
+            settings.consent_url,
+            lifetime_seconds=settings.delegation_lifetime_seconds,
+        )
     )
     return app
 

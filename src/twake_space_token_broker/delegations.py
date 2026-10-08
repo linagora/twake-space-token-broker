@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import dataclass
+from datetime import datetime
 
 from psycopg_pool import AsyncConnectionPool
 
@@ -13,6 +14,7 @@ SCHEMA = (
 CREATE TABLE IF NOT EXISTS delegations (
     user_email text PRIMARY KEY,
     refresh_token bytea NOT NULL,
+    consented_at timestamptz NOT NULL,
     updated_at timestamptz NOT NULL DEFAULT now()
 )
 """,
@@ -24,6 +26,12 @@ CREATE TABLE IF NOT EXISTS drive_delegations (
     updated_at timestamptz NOT NULL DEFAULT now()
 )
 """,
+    # The delegations of a broker of before consent dates take their last change as theirs: a
+    # refresh changed them only when LemonLDAP rotated the refresh token, which it does only for a
+    # client set to
+    "ALTER TABLE delegations ADD COLUMN IF NOT EXISTS consented_at timestamptz",
+    "UPDATE delegations SET consented_at = updated_at WHERE consented_at IS NULL",
+    "ALTER TABLE delegations ALTER COLUMN consented_at SET NOT NULL",
 )
 
 
@@ -48,14 +56,35 @@ class Delegations:
             for statement in SCHEMA:
                 await connection.execute(statement)
 
-    async def save(self, user: str, refresh_token: str) -> None:
+    async def save(self, user: str, refresh_token: str, *, consented_at: datetime) -> None:
+        """Keeps the user's new consent in place of any earlier one."""
         async with self._pool.connection() as connection:
             await connection.execute(
-                "INSERT INTO delegations (user_email, refresh_token) VALUES (%s, %s)"
+                "INSERT INTO delegations (user_email, refresh_token, consented_at)"
+                " VALUES (%s, %s, %s)"
                 " ON CONFLICT (user_email) DO UPDATE"
-                " SET refresh_token = EXCLUDED.refresh_token, updated_at = now()",
-                (user, self._cipher.encrypt(refresh_token, user=user)),
+                " SET refresh_token = EXCLUDED.refresh_token,"
+                " consented_at = EXCLUDED.consented_at, updated_at = now()",
+                (user, self._cipher.encrypt(refresh_token, user=user), consented_at),
             )
+
+    async def replace_refresh_token(self, user: str, refresh_token: str) -> None:
+        """Keeps the refresh token LemonLDAP rotated, under the same consent."""
+        async with self._pool.connection() as connection:
+            await connection.execute(
+                "UPDATE delegations SET refresh_token = %s, updated_at = now()"
+                " WHERE user_email = %s",
+                (self._cipher.encrypt(refresh_token, user=user), user),
+            )
+
+    async def consented_at(self, user: str) -> datetime | None:
+        """When the user consented, if they did."""
+        async with self._pool.connection() as connection:
+            cursor = await connection.execute(
+                "SELECT consented_at FROM delegations WHERE user_email = %s", (user,)
+            )
+            row = await cursor.fetchone()
+        return None if row is None else row[0]
 
     async def refresh_token_of(self, user: str) -> str | None:
         async with self._pool.connection() as connection:

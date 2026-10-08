@@ -156,6 +156,16 @@ async def remove_delegation(database_url: str, user: str) -> None:
         await connection.execute("DELETE FROM delegations WHERE user_email = %s", (user,))
 
 
+async def as_left_by_a_broker_without_consent_dates(database_url: str, *, changed_at: str) -> None:
+    """The database as a broker of before consent dates left it, its delegations last changed at
+    changed_at, in RFC 3339."""
+    async with await psycopg.AsyncConnection.connect(database_url) as connection:
+        await connection.execute("ALTER TABLE delegations DROP COLUMN consented_at")
+        await connection.execute(
+            "UPDATE delegations SET updated_at = %s::timestamptz", (changed_at,)
+        )
+
+
 async def database_dump(database_url: str) -> str:
     """Every row of every table, as PostgreSQL prints them."""
     async with await psycopg.AsyncConnection.connect(database_url) as connection:

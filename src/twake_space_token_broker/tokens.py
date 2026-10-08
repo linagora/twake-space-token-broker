@@ -5,6 +5,7 @@ import logging
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from twake_space_token_broker.delegations import Delegations
 from twake_space_token_broker.keys import Undecryptable
@@ -76,7 +77,13 @@ class AccessTokens:
 
     async def consented(self, signed_in: SignedIn) -> None:
         """Keeps the user's new delegation in place of any earlier one, with its access token."""
-        await self._delegations.save(signed_in.user, signed_in.refresh_token)
+        await self._delegations.save(
+            signed_in.user,
+            signed_in.refresh_token,
+            # LemonLDAP starts the offline session as it answers: from the request, the
+            # delegation never seems to last longer than it does
+            consented_at=datetime.fromtimestamp(signed_in.tokens.requested_at, UTC),
+        )
         self._cache.keep(signed_in.user, signed_in.tokens.access_token, signed_in.tokens)
 
     async def of(self, user: str) -> str:
@@ -101,6 +108,6 @@ class AccessTokens:
             logger.warning("LemonLDAP refused the delegation of %s (%s)", user, refused)
             raise DelegationExpired() from refused
         if tokens.refresh_token is not None and tokens.refresh_token != refresh_token:
-            await self._delegations.save(user, tokens.refresh_token)
+            await self._delegations.replace_refresh_token(user, tokens.refresh_token)
         self._cache.keep(user, tokens.access_token, tokens)
         return tokens.access_token
