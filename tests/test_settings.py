@@ -73,6 +73,29 @@ def test_a_token_reuse_that_is_not_a_whole_number_of_seconds_is_refused(
         create_app_from_env()
 
 
+def test_a_delegation_lasts_thirty_days_by_default(environment: pytest.MonkeyPatch) -> None:
+    """As LemonLDAP's offline sessions do by default, which Twake's keep for its agents."""
+    assert Settings.from_env(os.environ).delegation_lifetime_seconds == 2_592_000
+
+
+def test_the_environment_sets_how_long_a_delegation_lasts(
+    environment: pytest.MonkeyPatch,
+) -> None:
+    environment.setenv("DELEGATION_LIFETIME_SECONDS", "604800")
+
+    assert Settings.from_env(os.environ).delegation_lifetime_seconds == 604_800
+
+
+@pytest.mark.parametrize("seconds", ["30d", "-1"], ids=["not a number", "negative"])
+def test_a_delegation_lifetime_that_is_not_a_whole_number_of_seconds_is_refused(
+    environment: pytest.MonkeyPatch, seconds: str
+) -> None:
+    environment.setenv("DELEGATION_LIFETIME_SECONDS", seconds)
+
+    with pytest.raises(ValueError, match="DELEGATION_LIFETIME_SECONDS"):
+        create_app_from_env()
+
+
 def test_drive_is_off_by_default(environment: pytest.MonkeyPatch) -> None:
     assert Settings.from_env(os.environ).drive_instance_domain is None
 

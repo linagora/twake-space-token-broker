@@ -494,3 +494,18 @@ async def test_a_drive_authorization_whose_delegation_was_removed_meanwhile_is_r
 
     assert_consent_failed(response)
     assert await database_dump(database_url) == ""
+
+
+async def test_a_drive_authorization_whose_delegation_was_revoked_meanwhile_is_refused(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, cozy_stack: FakeCozyStack, drive: str
+) -> None:
+    to_drive = await consent(client, lemonldap, MMAUDET)
+    callback = cozy_stack.authorize(to_drive.headers["location"])
+    # The revocation could not remove the client the consent registered, which the broker keeps
+    cozy_stack.outage = "unreachable"
+    await client.delete("/delegation", headers=as_agent_of(MMAUDET))
+    cozy_stack.outage = None
+
+    response = await client.get(callback)
+
+    assert_consent_failed(response)

@@ -11,6 +11,9 @@ KEY_SIZE = 32
 TOKEN_REUSE_SECONDS = 60
 """The default of Settings.token_reuse_seconds."""
 
+DELEGATION_LIFETIME_SECONDS = 30 * 24 * 3600
+"""The default of Settings.delegation_lifetime_seconds: LemonLDAP's default offline session."""
+
 LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 """One label of a domain name, in lower case."""
 
@@ -30,6 +33,11 @@ class Settings:
     """Seconds an access token is handed out before LemonLDAP is asked again.
 
     It bounds how long a revoked delegation still gets tokens, as an access token lasts hours.
+    """
+    delegation_lifetime_seconds: int = DELEGATION_LIFETIME_SECONDS
+    """Seconds a delegation lasts from the consent: the offline session of LemonLDAP's client.
+
+    LemonLDAP 2.21 counts it from the consent, and no refresh extends it.
     """
     drive_instance_domain: str | None = None
     """The domain of the users' Drive instances, such as twake.example.com, or None for no Drive.
@@ -56,16 +64,18 @@ class Settings:
             client_secret=environ["OIDC_CLIENT_SECRET"],
             encryption_key=_key(environ["ENCRYPTION_KEY"]),
             public_base_url=environ["PUBLIC_BASE_URL"].rstrip("/"),
-            token_reuse_seconds=_reuse_seconds(
-                environ.get("TOKEN_REUSE_SECONDS", str(TOKEN_REUSE_SECONDS))
+            token_reuse_seconds=_seconds(environ, "TOKEN_REUSE_SECONDS", TOKEN_REUSE_SECONDS),
+            delegation_lifetime_seconds=_seconds(
+                environ, "DELEGATION_LIFETIME_SECONDS", DELEGATION_LIFETIME_SECONDS
             ),
             drive_instance_domain=_domain(environ.get("DRIVE_INSTANCE_DOMAIN", "")),
         )
 
 
-def _reuse_seconds(text: str) -> int:
+def _seconds(environ: Mapping[str, str], variable: str, default: int) -> int:
+    text = environ.get(variable, str(default))
     if not text.isdecimal():
-        raise ValueError("TOKEN_REUSE_SECONDS must be a whole number of seconds")
+        raise ValueError(f"{variable} must be a whole number of seconds")
     return int(text)
 
 

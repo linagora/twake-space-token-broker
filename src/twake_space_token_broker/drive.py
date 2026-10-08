@@ -3,7 +3,8 @@
 import asyncio
 import logging
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 
 from twake_space_token_broker.cozy_stack import CozyStack, InstanceRefused, InstanceUnavailable
@@ -37,23 +38,38 @@ class DriveTokens:
         self._cache = TokenCache[DriveAccess](clock, reuse_seconds=reuse_seconds)
         self._refreshing: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
-    async def forget(self, user: str) -> None:
-        """Drops the user's Drive delegation, and removes its client from the instance."""
+    async def forget_even_if_unavailable(self, user: str) -> None:
+        """Removes the broker's client from the user's Drive instance, and drops their Drive
+        delegation even when the instance does not answer, which then keeps the client."""
+        async with self._forgetting(user) as drive:
+            if drive is not None:
+                try:
+                    await self._cozy_stack.unregister(drive.instance, drive.client)
+                except InstanceUnavailable as unavailable:
+                    logger.warning(
+                        "The Drive instance of %s kept an earlier client: %s", user, unavailable
+                    )
+
+    async def forget_unless_unavailable(self, user: str) -> None:
+        """Removes the broker's client from the user's Drive instance, then drops their Drive
+        delegation, which stays for another try when the instance does not answer."""
+        async with self._forgetting(user) as drive:
+            if drive is not None:
+                await self._cozy_stack.unregister(drive.instance, drive.client)
+
+    @asynccontextmanager
+    async def _forgetting(self, user: str) -> AsyncIterator[DriveDelegation | None]:
+        """The user's Drive delegation, dropped once the block ends without an error."""
         # Under the user's lock, so that a refresh in progress cannot put its token back
         async with self._refreshing[user]:
+            self._cache.drop(user)
             try:
-                earlier = await self._delegations.drive_of(user)
+                drive = await self._delegations.drive_to_remove(user)
             except Undecryptable:
                 # Kept under another ENCRYPTION_KEY: its client stays, for the owner to remove
-                earlier = None
+                drive = None
+            yield drive
             await self._delegations.forget_drive(user)
-            self._cache.drop(user)
-        if earlier is None:
-            return
-        try:
-            await self._cozy_stack.unregister(earlier.instance, earlier.client)
-        except InstanceUnavailable as unavailable:
-            logger.warning("The Drive instance of %s kept an earlier client: %s", user, unavailable)
 
     async def request(self, user: str, instance: str, *, state: str, verifier: str) -> str:
         """Registers the broker on the user's Drive instance, and gives where they let it in."""
