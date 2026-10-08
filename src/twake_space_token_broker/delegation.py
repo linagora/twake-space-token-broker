@@ -41,8 +41,8 @@ def router(
                 status=404,
                 code="delegation_missing",
                 title="Delegation missing",
-                detail="The user has not let their agent act for them yet: they must open the"
-                " consent link.",
+                detail="The owner has no delegation: they must open the consent link to let their"
+                " agent act for them.",
                 extensions={"consent_url": consent_link(owner, consent_url)},
             )
         return {

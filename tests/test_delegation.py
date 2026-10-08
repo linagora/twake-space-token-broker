@@ -81,8 +81,8 @@ async def test_an_owner_who_never_consented_has_no_delegation(
         "type": "urn:twake:problem:delegation_missing",
         "title": "Delegation missing",
         "status": 404,
-        "detail": "The user has not let their agent act for them yet: they must open the consent"
-        " link.",
+        "detail": "The owner has no delegation: they must open the consent link to let their agent"
+        " act for them.",
         "code": "delegation_missing",
         "consent_url": f"{PUBLIC_BASE_URL}/consent?owner=mmaudet%40example.test",
     }
