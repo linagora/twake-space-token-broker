@@ -156,7 +156,7 @@ async def remove_delegation(database_url: str, user: str) -> None:
         await connection.execute("DELETE FROM delegations WHERE user_email = %s", (user,))
 
 
-async def as_left_by_a_broker_without_consent_dates(database_url: str, *, changed_at: str) -> None:
+async def as_left_by_an_earlier_broker(database_url: str, *, changed_at: str) -> None:
     """The database as a broker of before consent dates and revocations left it, its delegations
     last changed at changed_at, in RFC 3339."""
     async with await psycopg.AsyncConnection.connect(database_url) as connection:

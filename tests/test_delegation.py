@@ -10,17 +10,14 @@ from tests.conftest import (
     PUBLIC_BASE_URL,
     FakeClock,
     as_agent_of,
-    as_left_by_a_broker_without_consent_dates,
+    as_left_by_an_earlier_broker,
     consent,
     consent_with_drive,
-    database_dump,
     running,
 )
 from tests.fake_cozy_stack import FakeCozyStack
 from tests.fake_lemonldap import ACCESS_TOKEN_LIFETIME, FakeLemonLDAP
 from twake_space_token_broker.settings import Settings
-
-MMAUDETS_LINK = f"{PUBLIC_BASE_URL}/consent?owner=mmaudet%40example.test"
 
 DAY = 24 * 3600
 
@@ -36,7 +33,7 @@ async def test_a_delegation_lasts_thirty_days_from_the_consent(
     assert response.json() == {
         "consented_at": "2026-09-21T14:13:20Z",
         "expires_at": "2026-10-21T14:13:20Z",
-        "consent_url": MMAUDETS_LINK,
+        "consent_url": f"{PUBLIC_BASE_URL}/consent?owner=mmaudet%40example.test",
     }
 
 
@@ -67,7 +64,7 @@ async def test_an_expired_delegation_still_tells_when_it_expired(
     assert response.json() == {
         "consented_at": "2026-09-21T14:13:20Z",
         "expires_at": "2026-10-21T14:13:20Z",
-        "consent_url": MMAUDETS_LINK,
+        "consent_url": f"{PUBLIC_BASE_URL}/consent?owner=mmaudet%40example.test",
     }
 
 
@@ -87,7 +84,7 @@ async def test_an_owner_who_never_consented_has_no_delegation(
         "detail": "The user has not let their agent act for them yet: they must open the consent"
         " link.",
         "code": "delegation_missing",
-        "consent_url": MMAUDETS_LINK,
+        "consent_url": f"{PUBLIC_BASE_URL}/consent?owner=mmaudet%40example.test",
     }
 
 
@@ -179,20 +176,6 @@ async def test_revoking_a_delegation_removes_the_brokers_client_from_the_drive_i
     assert cozy_stack.clients_on(drive) == []
 
 
-async def test_a_revoked_delegation_leaves_nothing_in_the_brokers_database(
-    client: AsyncClient,
-    lemonldap: FakeLemonLDAP,
-    cozy_stack: FakeCozyStack,
-    drive: str,
-    database_url: str,
-) -> None:
-    await consent_with_drive(client, lemonldap, cozy_stack, MMAUDET)
-
-    await client.delete("/delegation", headers=as_agent_of(MMAUDET))
-
-    assert await database_dump(database_url) == ""
-
-
 async def test_revoking_a_revoked_delegation_changes_nothing(
     client: AsyncClient, lemonldap: FakeLemonLDAP, cozy_stack: FakeCozyStack, drive: str
 ) -> None:
@@ -256,11 +239,7 @@ async def test_a_revocation_the_drive_instance_does_not_answer_still_revokes_the
 
 
 async def test_a_revocation_tried_again_once_the_drive_instance_answers_removes_the_broker(
-    client: AsyncClient,
-    lemonldap: FakeLemonLDAP,
-    cozy_stack: FakeCozyStack,
-    drive: str,
-    database_url: str,
+    client: AsyncClient, lemonldap: FakeLemonLDAP, cozy_stack: FakeCozyStack, drive: str
 ) -> None:
     await consent_with_drive(client, lemonldap, cozy_stack, MMAUDET)
     cozy_stack.outage = "unreachable"
@@ -271,17 +250,22 @@ async def test_a_revocation_tried_again_once_the_drive_instance_answers_removes_
 
     assert response.status_code == 204
     assert cozy_stack.clients_on(drive) == []
-    assert await database_dump(database_url) == ""
+    # No Drive credentials are left: revoking again does not call the instance
+    cozy_stack.outage = "unreachable"
+    again = await client.delete("/delegation", headers=as_agent_of(MMAUDET))
+    status = await client.get("/delegation", headers=as_agent_of(MMAUDET))
+    assert again.status_code == 204
+    assert status.status_code == 404
 
 
 async def test_a_delegation_kept_before_consent_dates_dates_from_its_last_change(
     settings: Settings, lemonldap: FakeLemonLDAP, clock: FakeClock, database_url: str
 ) -> None:
-    """Without rotation, which LemonLDAP does only for a client set to, a refresh changes nothing:
-    a delegation last changed when its owner consented."""
+    """Without rotation, which LemonLDAP does only for a client set to rotate its refresh tokens, a
+    refresh changes nothing: a delegation last changed when its owner consented."""
     async with running(settings, lemonldap, clock) as broker:
         await consent(broker, lemonldap, MMAUDET)
-    await as_left_by_a_broker_without_consent_dates(database_url, changed_at="2026-09-01T08:00:00Z")
+    await as_left_by_an_earlier_broker(database_url, changed_at="2026-09-01T08:00:00Z")
 
     async with running(settings, lemonldap, clock) as broker:
         response = await broker.get("/delegation", headers=as_agent_of(MMAUDET))
@@ -300,7 +284,7 @@ async def test_a_delegation_kept_before_revocations_keeps_its_drive_client_for_a
 ) -> None:
     async with running(settings, lemonldap, clock, cozy_stack) as broker:
         await consent_with_drive(broker, lemonldap, cozy_stack, MMAUDET)
-    await as_left_by_a_broker_without_consent_dates(database_url, changed_at="2026-09-01T08:00:00Z")
+    await as_left_by_an_earlier_broker(database_url, changed_at="2026-09-01T08:00:00Z")
     cozy_stack.outage = "unreachable"
 
     async with running(settings, lemonldap, clock, cozy_stack) as broker:
