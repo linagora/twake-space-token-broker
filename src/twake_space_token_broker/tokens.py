@@ -86,6 +86,13 @@ class AccessTokens:
         )
         self._cache.keep(signed_in.user, signed_in.tokens.access_token, signed_in.tokens)
 
+    async def revoke(self, user: str) -> None:
+        """Revokes the user's delegation, whose agent gets no token from then on."""
+        # Under the user's lock, so that a refresh in progress cannot put its token back
+        async with self._refreshing[user]:
+            await self._delegations.revoke(user)
+            self._cache.drop(user)
+
     async def of(self, user: str) -> str:
         """A fresh access token of the user, for the user's agent."""
         # One refresh at a time per user: a rotated refresh token would void the others

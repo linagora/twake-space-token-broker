@@ -10,10 +10,12 @@ from twake_space_token_broker.cozy_stack import Client
 from twake_space_token_broker.keys import Cipher
 
 SCHEMA = (
+    # A revoked delegation keeps no refresh token, and stays only until the broker has removed its
+    # client from the user's Drive instance
     """
 CREATE TABLE IF NOT EXISTS delegations (
     user_email text PRIMARY KEY,
-    refresh_token bytea NOT NULL,
+    refresh_token bytea,
     consented_at timestamptz NOT NULL,
     updated_at timestamptz NOT NULL DEFAULT now()
 )
@@ -32,6 +34,8 @@ CREATE TABLE IF NOT EXISTS drive_delegations (
     "ALTER TABLE delegations ADD COLUMN IF NOT EXISTS consented_at timestamptz",
     "UPDATE delegations SET consented_at = updated_at WHERE consented_at IS NULL",
     "ALTER TABLE delegations ALTER COLUMN consented_at SET NOT NULL",
+    # A broker of before revocations kept a refresh token in each delegation
+    "ALTER TABLE delegations ALTER COLUMN refresh_token DROP NOT NULL",
 )
 
 
@@ -78,18 +82,39 @@ class Delegations:
             )
 
     async def consented_at(self, user: str) -> datetime | None:
-        """When the user consented, if they did."""
+        """When the user consented, unless they never did or revoked it since."""
         async with self._pool.connection() as connection:
             cursor = await connection.execute(
-                "SELECT consented_at FROM delegations WHERE user_email = %s", (user,)
+                "SELECT consented_at FROM delegations"
+                " WHERE user_email = %s AND refresh_token IS NOT NULL",
+                (user,),
             )
             row = await cursor.fetchone()
         return None if row is None else row[0]
 
+    async def revoke(self, user: str) -> None:
+        """Drops the user's refresh token: their Drive delegation stays, until the broker has
+        removed its client from their instance."""
+        async with self._pool.connection() as connection:
+            await connection.execute(
+                "UPDATE delegations SET refresh_token = NULL, updated_at = now()"
+                " WHERE user_email = %s",
+                (user,),
+            )
+
+    async def forget_revoked(self, user: str) -> None:
+        """Forgets the user's revoked delegation, unless they consented again since."""
+        async with self._pool.connection() as connection:
+            await connection.execute(
+                "DELETE FROM delegations WHERE user_email = %s AND refresh_token IS NULL", (user,)
+            )
+
     async def refresh_token_of(self, user: str) -> str | None:
         async with self._pool.connection() as connection:
             cursor = await connection.execute(
-                "SELECT refresh_token FROM delegations WHERE user_email = %s", (user,)
+                "SELECT refresh_token FROM delegations"
+                " WHERE user_email = %s AND refresh_token IS NOT NULL",
+                (user,),
             )
             row = await cursor.fetchone()
         return None if row is None else self._cipher.decrypt(row[0], user=user)
@@ -112,14 +137,28 @@ class Delegations:
             )
 
     async def drive_of(self, user: str) -> DriveDelegation | None:
+        """The user's Drive delegation, unless they revoked their delegation."""
+        async with self._pool.connection() as connection:
+            cursor = await connection.execute(
+                "SELECT credentials FROM drive_delegations JOIN delegations USING (user_email)"
+                " WHERE user_email = %s AND refresh_token IS NOT NULL",
+                (user,),
+            )
+            row = await cursor.fetchone()
+        return None if row is None else self._drive(row[0], user)
+
+    async def drive_to_remove(self, user: str) -> DriveDelegation | None:
+        """The user's Drive delegation, even once they revoked their delegation: the broker keeps
+        it until it has removed its client from their instance."""
         async with self._pool.connection() as connection:
             cursor = await connection.execute(
                 "SELECT credentials FROM drive_delegations WHERE user_email = %s", (user,)
             )
             row = await cursor.fetchone()
-        if row is None:
-            return None
-        credentials = json.loads(self._cipher.decrypt(row[0], user=user))
+        return None if row is None else self._drive(row[0], user)
+
+    def _drive(self, encrypted: bytes, user: str) -> DriveDelegation:
+        credentials = json.loads(self._cipher.decrypt(encrypted, user=user))
         return DriveDelegation(
             instance=credentials["instance"],
             client=Client(

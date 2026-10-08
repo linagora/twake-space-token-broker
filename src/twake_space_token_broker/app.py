@@ -69,6 +69,8 @@ def create_app(
     app.include_router(
         delegation.router(
             delegations,
+            access_tokens,
+            drive_tokens,
             settings.consent_url,
             lifetime_seconds=settings.delegation_lifetime_seconds,
         )

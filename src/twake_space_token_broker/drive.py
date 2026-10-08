@@ -55,6 +55,20 @@ class DriveTokens:
         except InstanceUnavailable as unavailable:
             logger.warning("The Drive instance of %s kept an earlier client: %s", user, unavailable)
 
+    async def revoke(self, user: str) -> None:
+        """Removes the broker's client from the user's Drive instance, then drops their Drive
+        delegation, which stays for another try when the instance does not answer."""
+        async with self._refreshing[user]:
+            self._cache.drop(user)
+            try:
+                drive = await self._delegations.drive_to_remove(user)
+            except Undecryptable:
+                # Kept under another ENCRYPTION_KEY: its client stays, for the owner to remove
+                drive = None
+            if drive is not None:
+                await self._cozy_stack.unregister(drive.instance, drive.client)
+            await self._delegations.forget_drive(user)
+
     async def request(self, user: str, instance: str, *, state: str, verifier: str) -> str:
         """Registers the broker on the user's Drive instance, and gives where they let it in."""
         client = await self._cozy_stack.register(instance)
