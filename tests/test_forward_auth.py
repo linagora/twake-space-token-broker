@@ -637,14 +637,16 @@ async def test_simultaneous_drive_calls_of_an_agent_share_one_refresh(
     assert len({response.headers["x-twake-drive-token"] for response in responses}) == 1
 
 
+@pytest.mark.parametrize("token", ["drvie", "space"], ids=["mistyped", "space while it is off"])
 async def test_a_token_the_broker_does_not_give_is_an_invalid_request(
-    client: AsyncClient, lemonldap: FakeLemonLDAP
+    client: AsyncClient, lemonldap: FakeLemonLDAP, token: str
 ) -> None:
-    """A mistyped query of a route must not leave its contract without the token it needs."""
+    """A mistyped query of a route, or one asking for Twake Space's token while the broker does
+    not reach Space, must not leave its contract without the token it needs."""
     await consent(client, lemonldap, MMAUDET)
 
     response = await client.get(
-        "/forward-auth", params={"token": "drvie"}, headers=as_agent_of(MMAUDET)
+        "/forward-auth", params={"token": token}, headers=as_agent_of(MMAUDET)
     )
 
     assert response.status_code == 400

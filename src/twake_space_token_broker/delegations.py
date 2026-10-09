@@ -36,6 +36,17 @@ CREATE TABLE IF NOT EXISTS drive_delegations (
     "ALTER TABLE delegations ALTER COLUMN consented_at SET NOT NULL",
     # A broker of before revocations kept a refresh token in each delegation
     "ALTER TABLE delegations ALTER COLUMN refresh_token DROP NOT NULL",
+    # The Twake Space token the user pasted, with the scopes the broker saw it hold: it goes with
+    # the user's delegation, but a new consent keeps it
+    """
+CREATE TABLE IF NOT EXISTS space_tokens (
+    user_email text PRIMARY KEY REFERENCES delegations ON DELETE CASCADE,
+    token bytea NOT NULL,
+    scopes text[] NOT NULL,
+    pasted_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now()
+)
+""",
 )
 
 REVOKED = "refresh_token IS NULL"
@@ -173,3 +184,31 @@ class Delegations:
     async def forget_drive(self, user: str) -> None:
         async with self._pool.connection() as connection:
             await connection.execute("DELETE FROM drive_delegations WHERE user_email = %s", (user,))
+
+    async def save_space_token(
+        self, user: str, token: str, *, scopes: list[str], pasted_at: datetime
+    ) -> bool:
+        """Keeps the Space token the user pasted in place of any earlier one, beside their
+        delegation: False, and nothing kept, when they have none or revoked it."""
+        async with self._pool.connection() as connection:
+            cursor = await connection.execute(
+                "INSERT INTO space_tokens (user_email, token, scopes, pasted_at)"
+                " SELECT user_email, %s, %s, %s FROM delegations"
+                f" WHERE user_email = %s AND NOT ({REVOKED})"
+                " ON CONFLICT (user_email) DO UPDATE"
+                " SET token = EXCLUDED.token, scopes = EXCLUDED.scopes,"
+                " pasted_at = EXCLUDED.pasted_at, updated_at = now()",
+                (self._cipher.encrypt(token, user=user), scopes, pasted_at, user),
+            )
+        return cursor.rowcount == 1
+
+    async def space_token_of(self, user: str) -> str | None:
+        """The Space token the user pasted, unless they revoked their delegation."""
+        async with self._pool.connection() as connection:
+            cursor = await connection.execute(
+                "SELECT token FROM space_tokens JOIN delegations USING (user_email)"
+                f" WHERE user_email = %s AND NOT ({REVOKED})",
+                (user,),
+            )
+            row = await cursor.fetchone()
+        return None if row is None else self._cipher.decrypt(row[0], user=user)

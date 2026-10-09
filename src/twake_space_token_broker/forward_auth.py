@@ -10,12 +10,16 @@ from twake_space_token_broker.cozy_stack import InstanceUnavailable
 from twake_space_token_broker.drive import DriveAccess, DriveTokens
 from twake_space_token_broker.lemonldap import LemonLDAP, LemonLDAPUnavailable
 from twake_space_token_broker.problems import Problem
+from twake_space_token_broker.space import SpaceTokenMissing, SpaceTokens
 from twake_space_token_broker.tokens import AccessTokens, DelegationExpired, DelegationMissing
 
 logger = logging.getLogger(__name__)
 
 DRIVE = "drive"
 """The token a Drive route asks for, with ?token=drive."""
+
+SPACE = "space"
+"""The token a Twake Space route asks for, with ?token=space."""
 
 
 def _owner(
@@ -40,8 +44,11 @@ def router(
     drive_tokens: DriveTokens,
     lemonldap: LemonLDAP,
     consent_url: str,
+    space_tokens: SpaceTokens | None = None,
 ) -> APIRouter:
     routes = APIRouter()
+    # A route may ask for Space's token only when the broker reaches Space
+    tokens = (DRIVE,) if space_tokens is None else (DRIVE, SPACE)
 
     async def drive_access(owner: str, access_token: str) -> DriveAccess:
         """The owner's Drive token, given their LemonLDAP access token."""
@@ -63,23 +70,25 @@ def router(
     @routes.get("/forward-auth")
     async def forward_auth(owner: Owner, token: str | None = None) -> Response:
         """Answers with the owner's access token, which APISIX passes on to the contract, and with
-        a token of their Drive instance when the route asks for it."""
-        if token not in (None, DRIVE):
+        a token of their Drive instance or of Twake Space when the route asks for it."""
+        if token is not None and token not in tokens:
             raise Problem(
                 status=400,
                 code="unknown_token",
                 title="Unknown token",
-                detail="The token query parameter can only ask for drive.",
+                detail=f"The token query parameter can only ask for {' or '.join(tokens)}.",
             )
         try:
             # LemonLDAP's token first: it names the owner to the contract, and a delegation
-            # LemonLDAP no longer honours gives no Drive token either
+            # LemonLDAP no longer honours gives no Drive or Space token either
             access_token = await access_tokens.of(owner)
             headers = {"Authorization": f"Bearer {access_token}"}
             if token == DRIVE:
                 drive = await drive_access(owner, access_token)
                 headers["X-Twake-Drive-Token"] = drive.access_token
                 headers["X-Twake-Drive-Instance"] = drive.instance
+            if token == SPACE and space_tokens is not None:
+                headers["X-Twake-Space-Token"] = await space_tokens.of(owner)
         except DelegationMissing as missing:
             raise Problem(
                 status=401,
@@ -98,6 +107,15 @@ def router(
                 " the consent link again.",
                 extensions={"consent_url": consent_link(owner, consent_url)},
             ) from expired
+        except SpaceTokenMissing as missing:
+            raise Problem(
+                status=401,
+                code="space_token_missing",
+                title="Space token missing",
+                detail="The user has given their agent no Twake Space token: they must paste one"
+                " through the consent link.",
+                extensions={"consent_url": consent_link(owner, consent_url, app=SPACE)},
+            ) from missing
         except LemonLDAPUnavailable as unavailable:
             logger.warning("LemonLDAP failed the forward-auth of %s: %s", owner, unavailable)
             raise Problem(
