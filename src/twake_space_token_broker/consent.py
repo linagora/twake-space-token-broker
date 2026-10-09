@@ -3,12 +3,15 @@
 The consent runs in steps: the user signs in to LemonLDAP, then, when LemonLDAP names their Drive
 instance, lets the broker in on that instance, both coming back to /callback. When the broker
 reaches Twake Space, the consent ends on the Space step, whose form posts the API token the user
-pastes. A link bound to its owner checks that the account that signed in is theirs.
+pastes. A link bound to its owner checks that the account that signed in is theirs. The owner's
+link for Space goes from LemonLDAP straight to the Space step, and leaves their Drive delegation as
+it was.
 """
 
 import logging
 import secrets
 from collections.abc import Callable, Collection
+from datetime import UTC, datetime
 from enum import StrEnum
 from html import escape
 from typing import Annotated, Any
@@ -17,7 +20,7 @@ from urllib.parse import parse_qs
 from fastapi import APIRouter, Cookie, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
-from twake_space_token_broker.consent_links import CONSENT, consent_link
+from twake_space_token_broker.consent_links import CONSENT, SPACE_APP, consent_link
 from twake_space_token_broker.cozy_stack import InstanceRefused, InstanceUnavailable
 from twake_space_token_broker.drive import DriveTokens
 from twake_space_token_broker.keys import Signer
@@ -30,11 +33,11 @@ from twake_space_token_broker.lemonldap import (
 )
 from twake_space_token_broker.space import (
     SCOPES,
+    KeptToken,
     NotASpaceToken,
     NotTheirs,
     ScopesMissing,
     SpaceRefused,
-    SpaceTokenMissing,
     SpaceTokens,
     SpaceUnavailable,
     TooBroad,
@@ -90,6 +93,11 @@ SPACE_KEPT = "Dans vos espaces Twake Space, il garde le jeton d'API que vous avi
 
 SPACE_PASTED = "Dans vos espaces Twake Space, il agit avec le jeton que vous avez collé."
 
+SPACE_REMOVED = (
+    "Il n'agit plus dans vos espaces Twake Space : le jeton d'API que vous aviez collé est retiré."
+    " Révoquez-le aussi sur la page « Jetons d'API » de Twake Space."
+)
+
 NOT_KEPT = "Ce jeton n'a pas été enregistré :"
 
 NOT_A_TOKEN = f"{NOT_KEPT} ce n'est pas un jeton d'API de Twake Space, qui commence par tws_."
@@ -97,6 +105,21 @@ NOT_A_TOKEN = f"{NOT_KEPT} ce n'est pas un jeton d'API de Twake Space, qui comme
 NOT_IN_PROGRESS = "Cette page ne correspond pas à l'autorisation en cours."
 
 UNAVAILABLE = "Votre instance Drive n'a pas pu terminer l'autorisation."
+
+MONTHS = (
+    "janvier",
+    "février",
+    "mars",
+    "avril",
+    "mai",
+    "juin",
+    "juillet",
+    "août",
+    "septembre",
+    "octobre",
+    "novembre",
+    "décembre",
+)
 
 
 class DriveOutcome(StrEnum):
@@ -111,6 +134,8 @@ class DriveOutcome(StrEnum):
     """The user's instance refused the code it gave."""
     UNAVAILABLE = "unavailable"
     """The user's instance did not answer."""
+    UNCHANGED = "unchanged"
+    """The consent was for Space alone: it left the user's Drive delegation as it was."""
 
 
 WITHOUT_DRIVE = {
@@ -180,14 +205,14 @@ def _without_drive(message: str, *, retry_url: str, status_code: int) -> HTMLRes
     return response
 
 
-def _wrong_account(owner: str, signed_in: str) -> HTMLResponse:
+def _wrong_account(owner: str, signed_in: str, *, retry_url: str) -> HTMLResponse:
     """The browser is signed in as another account than the one the link is for."""
     response = _page(
         "Ce lien est pour un autre compte",
         f"Ce lien autorise l'assistant de {owner}, mais ce navigateur est connecté à Twake en"
         f" tant que {signed_in} : rien n'a été enregistré. Ouvrez ce lien dans une fenêtre de"
         f" navigation privée, puis connectez-vous en tant que {owner}.",
-        retry_url=consent_link(owner),
+        retry_url=retry_url,
         status_code=403,
     )
     response.delete_cookie(COOKIE)
@@ -202,6 +227,11 @@ def _authorized_for(user: str, drive: DriveOutcome) -> str:
         return (
             f"Votre assistant Twake Space peut désormais agir pour {user}."
             " Drive n'est pas disponible pour votre compte."
+        )
+    if drive is DriveOutcome.UNCHANGED:
+        return (
+            f"Votre assistant Twake Space peut toujours agir pour {user}."
+            " Son accès à Drive ne change pas."
         )
     reason, _ = WITHOUT_DRIVE[drive]
     return (
@@ -236,6 +266,12 @@ def _allows(held: frozenset[str]) -> str:
     return f"Ce jeton permet : {_labels(held)}. Il ne permet pas : {_labels(lacking)}."
 
 
+def _day(moment: datetime) -> str:
+    """The day of the moment in UTC, as French writes it: 1er octobre 2026, 21 septembre 2026."""
+    day = moment.astimezone(UTC)
+    return f"{'1er' if day.day == 1 else day.day} {MONTHS[day.month - 1]} {day.year}"
+
+
 def _space_step(
     user: str,
     drive: DriveOutcome,
@@ -243,17 +279,38 @@ def _space_step(
     state: str,
     tokens_page: str,
     status_code: int,
+    kept: KeptToken | None,
     problem: str | None = None,
 ) -> HTMLResponse:
     """Which API token to create in Twake Space, in the words of its page, and where to paste it:
-    after why the token pasted was not kept, if it was not."""
+    after why the token pasted was not kept, if it was not.
+
+    With a token kept, the step says when it was pasted and what it allows, and offers to keep it,
+    to replace it or to remove it.
+    """
     steps = "".join(f"\n<li>{escape(step)}</li>" for step in TOKEN_TO_CREATE)
+    if kept is None:
+        paragraphs = [
+            "Pour qu'il lise vos espaces Twake Space et leurs fils, et qu'il en gère les membres,"
+            " créez-lui un jeton d'API dans Twake Space, puis collez-le ici."
+        ]
+        buttons = """<button type="submit">Enregistrer le jeton</button>
+<button type="submit" name="skip" value="yes" formnovalidate>Passer cette étape</button>"""
+    else:
+        paragraphs = [
+            f"Un jeton est déjà enregistré, collé le {_day(kept.pasted_at)}."
+            f" {_allows(kept.scopes)}",
+            "Gardez-le, retirez-le, ou remplacez-le : créez un autre jeton d'API dans Twake Space,"
+            " puis collez-le ici.",
+        ]
+        buttons = """<button type="submit">Remplacer le jeton</button>
+<button type="submit" name="skip" value="yes" formnovalidate>Garder ce jeton</button>
+<button type="submit" name="remove" value="yes" formnovalidate>Retirer ce jeton</button>"""
     return _page(
         "Votre assistant dans vos espaces",
         *([problem] if problem else []),
         _authorized_for(user, drive),
-        "Pour qu'il lise vos espaces Twake Space et leurs fils, et qu'il en gère les membres,"
-        " créez-lui un jeton d'API dans Twake Space, puis collez-le ici.",
+        *paragraphs,
         more=f"""
 <ol>
 <li>Ouvrez la page <a href="{escape(tokens_page)}">Jetons d'API</a> de Twake Space, puis cliquez sur
@@ -265,8 +322,7 @@ def _space_step(
 <p><label for="space_token">Jeton</label>
 <input id="space_token" name="space_token" type="text" autocomplete="off" spellcheck="false"
 required></p>
-<p><button type="submit">Enregistrer le jeton</button>
-<button type="submit" name="skip" value="yes" formnovalidate>Passer cette étape</button></p>
+<p>{buttons}</p>
 </form>""",
         status_code=status_code,
     )
@@ -284,9 +340,10 @@ async def _form(request: Request) -> dict[str, str] | None:
     return {name: values[0] for name, values in fields.items()}
 
 
-def _retry_url(owner: str | None) -> str:
-    """Where a failed consent starts over: from its owner's link, when it had one."""
-    return consent_link(owner) if owner else CONSENT
+def _retry_url(owner: str | None, app: str | None = None) -> str:
+    """Where a failed consent starts over: from its owner's link, for the app it was for, when it
+    had one."""
+    return consent_link(owner, app=app) if owner else CONSENT
 
 
 def _owner(value: str | None) -> str | None:
@@ -331,12 +388,16 @@ def router(
                 "Aucune autorisation n'est en cours dans ce navigateur.", retry_url=CONSENT
             )
         if clock() >= flow["expires"]:
-            return _refused("L'autorisation a expiré.", retry_url=_retry_url(flow.get("owner")))
+            return _refused(
+                "L'autorisation a expiré.",
+                retry_url=_retry_url(flow.get("owner"), flow.get("app")),
+            )
         return flow
 
     @routes.get(CONSENT)
-    async def consent(owner: str | None = None) -> RedirectResponse:
-        """Starts a consent, bound to its owner when the link names them."""
+    async def consent(owner: str | None = None, app: str | None = None) -> RedirectResponse:
+        """Starts a consent, bound to its owner when the link names them, and for Space alone
+        when the owner's link names that app."""
         owner = _owner(owner)
         state = secrets.token_urlsafe(32)
         verifier = secrets.token_urlsafe(48)
@@ -344,7 +405,9 @@ def router(
             lemonldap.authorize_url(state=state, verifier=verifier, owner=owner),
             status_code=302,
         )
-        remember(response, {"state": state, "verifier": verifier, "owner": owner})
+        # Only the owner's link is for an app: the plain link stays the whole consent
+        app = SPACE_APP if owner is not None and app == SPACE_APP else None
+        remember(response, {"state": state, "verifier": verifier, "owner": owner, "app": app})
         return response
 
     @routes.get("/callback")
@@ -356,7 +419,7 @@ def router(
         flow = in_progress(started)
         if isinstance(flow, HTMLResponse):
             return flow
-        retry_url = _retry_url(flow.get("owner"))
+        retry_url = _retry_url(flow.get("owner"), flow.get("app"))
         step = flow.get("step")
         if step == DRIVE_STEP:
             return await drive_callback(flow, code, state)
@@ -390,8 +453,16 @@ def router(
             logger.warning(
                 "A consent for %s came back signed in as %s: nothing stored", owner, signed_in.user
             )
-            return _wrong_account(owner, signed_in.user)
+            return _wrong_account(owner, signed_in.user, retry_url=retry_url)
+        # The owner may come for their Space token alone while their delegation holds: once they
+        # revoked it, the broker keeps its Drive delegation only to leave the instance
+        space_alone = (
+            flow.get("app") == SPACE_APP
+            and await access_tokens.consented_at(signed_in.user) is not None
+        )
         await access_tokens.consented(signed_in)
+        if space_alone:
+            return await end(signed_in.user, owner, DriveOutcome.UNCHANGED, app=SPACE_APP)
         # The new consent replaces the whole delegation: Drive comes back only if granted again,
         # while the Space token stays, as the owner pasted it in Space's stead
         await drive_tokens.forget_even_if_unavailable(signed_in.user)
@@ -411,7 +482,7 @@ def router(
             )
             instance = None
         if instance is None:
-            return end(signed_in.user, owner, DriveOutcome.ABSENT)
+            return await end(signed_in.user, owner, DriveOutcome.ABSENT)
         state = secrets.token_urlsafe(32)
         verifier = secrets.token_urlsafe(48)
         try:
@@ -422,7 +493,7 @@ def router(
             logger.warning(
                 "The Drive instance of %s took no client: %s", signed_in.user, unavailable
             )
-            return end(signed_in.user, owner, DriveOutcome.UNAVAILABLE)
+            return await end(signed_in.user, owner, DriveOutcome.UNAVAILABLE)
         response = RedirectResponse(authorize_url, status_code=302)
         remember(
             response,
@@ -443,7 +514,7 @@ def router(
         if code is None:
             # The instance's page links back with no state when the user declines: the answer
             # changes nothing the broker keeps
-            return end(user, owner, DriveOutcome.DECLINED)
+            return await end(user, owner, DriveOutcome.DECLINED)
         retry_url = _retry_url(owner)
         if not _same_state(flow, state):
             return _refused(NOT_IN_PROGRESS, retry_url=retry_url)
@@ -452,35 +523,50 @@ def router(
         except DelegationMissing:
             return _refused("Cette autorisation n'est plus en cours.", retry_url=retry_url)
         except InstanceRefused:
-            return end(user, owner, DriveOutcome.REFUSED)
+            return await end(user, owner, DriveOutcome.REFUSED)
         except InstanceUnavailable as unavailable:
             logger.warning("The Drive instance of %s completed no consent: %s", user, unavailable)
-            return end(user, owner, DriveOutcome.UNAVAILABLE)
-        return end(user, owner, DriveOutcome.GRANTED)
+            return await end(user, owner, DriveOutcome.UNAVAILABLE)
+        return await end(user, owner, DriveOutcome.GRANTED)
 
-    def end(user: str, owner: str | None, drive: DriveOutcome) -> Response:
-        """Where every consent LemonLDAP granted ends, whether Drive was granted, absent or
-        failed: on the Space step, when the broker reaches Twake Space.
+    async def end(
+        user: str, owner: str | None, drive: DriveOutcome, *, app: str | None = None
+    ) -> Response:
+        """Where every consent LemonLDAP granted ends, whether Drive was granted, absent, failed
+        or left as it was: on the Space step, when the broker reaches Twake Space.
 
-        The page bears the status of the Drive step.
+        The page bears the status of the Drive step. A consent for an app starts over from the
+        owner's link for that app.
         """
         status_code = WITHOUT_DRIVE[drive][1] if drive in WITHOUT_DRIVE else 200
         if space_tokens is None:
             return _last_page(user, owner, drive, status_code=status_code)
         state = secrets.token_urlsafe(32)
         response = _space_step(
-            user, drive, state=state, tokens_page=space_tokens.tokens_page, status_code=status_code
+            user,
+            drive,
+            state=state,
+            tokens_page=space_tokens.tokens_page,
+            status_code=status_code,
+            kept=await space_tokens.kept(user),
         )
         remember(
             response,
-            {"step": SPACE_STEP, "user": user, "owner": owner, "state": state, "drive": drive},
+            {
+                "step": SPACE_STEP,
+                "user": user,
+                "owner": owner,
+                "app": app,
+                "state": state,
+                "drive": drive,
+            },
         )
         return response
 
     if space_tokens is None:
         return routes
 
-    def step_again(flow: dict[str, Any], problem: str, *, status_code: int) -> HTMLResponse:
+    async def step_again(flow: dict[str, Any], problem: str, *, status_code: int) -> HTMLResponse:
         """The Space step as it was, after why the token pasted was not kept."""
         return _space_step(
             flow["user"],
@@ -488,16 +574,14 @@ def router(
             state=flow["state"],
             tokens_page=space_tokens.tokens_page,
             status_code=status_code,
+            kept=await space_tokens.kept(flow["user"]),
             problem=problem,
         )
 
     async def after_skipping(user: str) -> str:
-        """What the user's agent does in Twake Space once they skipped the Space step."""
-        try:
-            await space_tokens.of(user)
-        except SpaceTokenMissing:
-            return SPACE_SKIPPED
-        return SPACE_KEPT
+        """What the user's agent does in Twake Space once they skipped the Space step, or kept
+        their token."""
+        return SPACE_SKIPPED if await space_tokens.kept(user) is None else SPACE_KEPT
 
     @routes.post(SPACE_FORM)
     async def space_step(
@@ -508,7 +592,7 @@ def router(
         flow = in_progress(started)
         if isinstance(flow, HTMLResponse):
             return flow
-        retry_url = _retry_url(flow.get("owner"))
+        retry_url = _retry_url(flow.get("owner"), flow.get("app"))
         form = await _form(request)
         if flow.get("step") != SPACE_STEP or (
             form is not None and not _same_state(flow, form.get("state"))
@@ -516,37 +600,40 @@ def router(
             return _refused(NOT_IN_PROGRESS, retry_url=retry_url)
         if form is None:
             # A form that big holds no token, and its state goes unread: the step stays as it was
-            return step_again(flow, NOT_A_TOKEN, status_code=400)
+            return await step_again(flow, NOT_A_TOKEN, status_code=400)
         user, owner, drive = flow["user"], flow.get("owner"), DriveOutcome(flow["drive"])
         if "skip" in form:
             return _last_page(user, owner, drive, status_code=200, space=await after_skipping(user))
+        if "remove" in form:
+            await space_tokens.remove(user)
+            return _last_page(user, owner, drive, status_code=200, space=SPACE_REMOVED)
         try:
             held = await space_tokens.paste(user, form.get("space_token", ""))
         except NotASpaceToken:
-            return step_again(flow, NOT_A_TOKEN, status_code=400)
+            return await step_again(flow, NOT_A_TOKEN, status_code=400)
         except SpaceRefused:
-            return step_again(
+            return await step_again(
                 flow,
                 f"{NOT_KEPT} Twake Space ne le reconnaît pas. Copiez-le en entier, ou créez-en un"
                 " autre s'il a été révoqué ou s'il a expiré.",
                 status_code=400,
             )
         except TooBroad:
-            return step_again(
+            return await step_again(
                 flow,
                 f"{NOT_KEPT} il permet « Gérer les jetons » : s'il fuyait, il servirait à en créer"
                 " d'autres. Créez-en un autre, avec Jetons d'API « Aucun accès ».",
                 status_code=400,
             )
         except ScopesMissing as missing:
-            return step_again(
+            return await step_again(
                 flow,
                 f"{NOT_KEPT} il faut au moins « Lire les espaces » et « Lire les fils »."
                 f" {_allows(missing.held)}",
                 status_code=400,
             )
         except NotTheirs:
-            return step_again(
+            return await step_again(
                 flow,
                 f"{NOT_KEPT} c'est un jeton d'organisation ou celui d'un autre compte : dans au"
                 " moins un des espaces qu'il atteint, il n'agit pas en votre nom. Créez le vôtre"
@@ -555,7 +642,7 @@ def router(
             )
         except SpaceUnavailable as unavailable:
             logger.warning("Twake Space checked no token of %s: %s", user, unavailable)
-            return step_again(
+            return await step_again(
                 flow,
                 f"{NOT_KEPT} Twake Space n'a pas pu le vérifier. Réessayez dans un moment.",
                 status_code=502,

@@ -13,6 +13,7 @@ Twake Space takes the API tokens its users create. The consent ends on a step wh
 | Request | Answer |
 |---|---|
 | `GET /consent?owner=<email>` | the consent link bound to its owner, as the problems below give it: a redirect to LemonLDAP |
+| `GET /consent?owner=<email>&app=space` | the owner's link for their Space token, as `space_token_missing` gives it: a redirect to LemonLDAP, then straight to the Space step |
 | `GET /consent` | the plain consent link, the same for every user: a redirect to LemonLDAP |
 | `GET /callback` | where LemonLDAP, then the user's Drive instance, send the user back: a short page in French |
 | `POST /consent/space` | where the Space step posts the token the user pasted, or skips it: a short page in French |
@@ -40,12 +41,14 @@ Twake Space takes the API tokens its users create. The consent ends on a step wh
 
 - With `SPACE_URL` set, every consent LemonLDAP granted ends on the Space step, after Drive when LemonLDAP names an instance. The page says whether the agent may act in Drive, and bears the status of the Drive step. It then links to Space's page of API tokens, `<SPACE_WEB_URL>/settings/api-tokens`, and names the token to create there in that page's words: « Assistant », Espaces « Écriture », Fil d'activité « Lecture », Membres « Écriture », Jetons d'API « Aucun accès », « Tous mes espaces, y compris ceux que je rejoindrai », and « 90 jours ».
 - The user pastes the token in the page's form, or skips the step. The form posts to `/consent/space`, bound to the consent in progress by its signed cookie and a state of its own, within the consent's 10 minutes.
+- The owner's link for Space goes from LemonLDAP straight to the Space step, and leaves their Drive delegation as it was: the page says so. It refuses another account as the owner's link does, and keeps LemonLDAP's new refresh token as any consent does. An owner whose delegation is missing or revoked goes through the whole consent instead, Drive included, so that a revoked Drive delegation, which the broker keeps until it has left the instance, does not come back.
+- When a token is kept, the step says when it was pasted, as a day in UTC, and what it allows, from the scopes seen when it was pasted. It offers to keep it, which changes nothing, to replace it, or to remove it. A replacement goes through every check below, and the token kept stays when the new one is not kept. A token removed leaves the agent without Twake Space, and the page asks the owner to revoke it in Space as well.
 - The broker keeps a token only if it starts with `tws_` and Space answers `GET /spaces` with it. It then asks Space which scopes the token holds, without changing anything: Space checks a route's scope before anything else, answering 403 `insufficient_scope` without it, and past that check answers 400 or 404 on a space that does not exist. The probes are `GET /spaces/<uuid>/feed` for `feed:read`, then `POST /spaces/<uuid>/members` and `PATCH /spaces/<uuid>`, both with `{}`, for `members:write` and `space:write`, on a random UUID, and `GET /tokens` for `tokens:write`, which lists an account's tokens and refuses an organization token with 403 `forbidden` past that check.
 - A token with `tokens:write`, « Gérer les jetons », is not kept: were it to leak, it would create others. The page says so, and the user may paste another.
 - A token without `space:read` or `feed:read` is not kept: the page says so, with the scopes the token holds and those it lacks in Space's words, and the user may paste another. A token without `members:write` or `space:write` is kept, and the page says what the agent cannot do with it.
 - Space has no route that names whom a token acts for, so the broker reads it from the spaces the token reaches: `GET /spaces`, then `GET /spaces/<id>` for each. In each, the owner must be a member, under their email whatever its case, with the `role` Space gives the token there. A token of the owner's account passes, as it acts with the owner's role in each of their spaces. An organization token, which acts with a role of its own in every space of the organization, or another account's token, fails in a space where the owner is not a member with that role: it is not kept, and the page says it is an organization token or another account's. A token that reaches no space is kept, as nothing tells whose it is then.
 - A token Space does not know, mistyped, revoked or expired, is not kept either (400), nor one Space cannot check (502, and a warning in the logs).
-- Skipping the step leaves the agent without Twake Space, unless it keeps a token pasted at an earlier consent: a new consent keeps the Space token, and a token pasted again replaces it.
+- Skipping the step leaves the agent without Twake Space, unless it keeps a token pasted at an earlier consent: a new consent keeps the Space token, and a token pasted again replaces it. Revoking the delegation forgets it.
 - No Space token is ever logged, nor shown in a page, nor put in the cookie.
 - Without `SPACE_URL`, the consent has no Space step and the broker serves no `/consent/space`.
 
@@ -93,7 +96,7 @@ Every error is an [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem (`a
 
 - A delegation dates from its owner's last consent, and lasts `DELEGATION_LIFETIME_SECONDS` from it, 30 days by default: the offline session of LemonLDAP's client. LemonLDAP 2.21 counts that session from the consent, and no refresh extends it, so `expires_at` holds until the owner consents again. Set the variable to the client's offline session lifetime when the client sets one, or else to LemonLDAP's `oidcServiceOfflineSessionExpiration`.
 - `GET /delegation` gives the dates of an expired delegation too.
-- `DELETE /delegation` revokes the delegation first: from then on the agent gets no token, and forward-auth answers `delegation_missing`. The broker then removes its client from the owner's Drive instance, which voids that client's tokens, and forgets the Drive delegation.
+- `DELETE /delegation` revokes the delegation first, and forgets the owner's Space token with it: from then on the agent gets no token, and forward-auth answers `delegation_missing`. The broker then removes its client from the owner's Drive instance, which voids that client's tokens, and forgets the Drive delegation.
 - When the instance does not answer, the delegation is revoked all the same, but the broker keeps its Drive client to remove it later, and answers 502 `drive_unavailable`: calling `DELETE /delegation` again removes the client once the instance answers.
 - LemonLDAP 2.21 cannot revoke an offline session: the revoked refresh token stays valid at LemonLDAP until its session expires, held by no one.
 
@@ -112,11 +115,11 @@ The broker creates its tables, `delegations`, `drive_delegations` and `space_tok
 - the time of the user's consent;
 - the time of its last change.
 
-A revoked delegation stays, without its refresh token, only until the broker has removed its client from the user's Drive instance. A delegation kept by an earlier version of the broker takes its last change as the time of its consent: a refresh changed it only when LemonLDAP rotated its refresh token, which LemonLDAP does only for a client set to rotate its refresh tokens.
+A revoked delegation stays, without its refresh token or Space token, only until the broker has removed its client from the user's Drive instance. A delegation kept by an earlier version of the broker takes its last change as the time of its consent: a refresh changed it only when LemonLDAP rotated its refresh token, which LemonLDAP does only for a client set to rotate its refresh tokens.
 
 A row of `drive_delegations` holds the user's email, which refers to their row of `delegations`; the host of their Drive instance, the broker's client on it and the instance's refresh token, encrypted together the same way; and the time of its last change. Deleting a user's delegation deletes their Drive delegation with it.
 
-A row of `space_tokens` holds the user's email, which refers to their row of `delegations`; the Space token they pasted, encrypted the same way; the scopes the broker saw it hold; when they pasted it; and the time of its last change. A new consent keeps it, but deleting the user's delegation deletes it with it.
+A row of `space_tokens` holds the user's email, which refers to their row of `delegations`; the Space token they pasted, encrypted the same way; the scopes the broker saw it hold; when they pasted it; and the time of its last change. A new consent keeps it. Removing it on the Space step deletes it, as does revoking the user's delegation, at once.
 
 The key of the tokens and the key of the consent cookie are both derived from `ENCRYPTION_KEY` with HKDF. A token that no longer decrypts, after a change of that key, counts as expired, so the next consent replaces it. A Space token that no longer decrypts counts as missing, so the next one pasted replaces it.
 

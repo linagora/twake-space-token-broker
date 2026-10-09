@@ -5,7 +5,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Response
 
-from twake_space_token_broker.consent_links import consent_link
+from twake_space_token_broker.consent_links import SPACE_APP, consent_link
 from twake_space_token_broker.cozy_stack import InstanceUnavailable
 from twake_space_token_broker.drive import DriveAccess, DriveTokens
 from twake_space_token_broker.lemonldap import LemonLDAP, LemonLDAPUnavailable
@@ -114,7 +114,7 @@ def router(
                 title="Space token missing",
                 detail="The user has given their agent no Twake Space token: they must paste one"
                 " through the consent link.",
-                extensions={"consent_url": consent_link(owner, consent_url, app=SPACE)},
+                extensions={"consent_url": consent_link(owner, consent_url, app=SPACE_APP)},
             ) from missing
         except LemonLDAPUnavailable as unavailable:
             logger.warning("LemonLDAP failed the forward-auth of %s: %s", owner, unavailable)
