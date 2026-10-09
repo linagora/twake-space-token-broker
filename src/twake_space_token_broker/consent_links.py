@@ -6,9 +6,10 @@ CONSENT = "/consent"
 """The plain consent link, relative to the broker: it names nobody."""
 
 
-def consent_link(owner: str, plain: str = CONSENT) -> str:
-    """The consent link bound to its owner.
+def consent_link(owner: str, plain: str = CONSENT, *, app: str | None = None) -> str:
+    """The consent link bound to its owner, and to the app it is for, if any.
 
     It extends the plain link given, which is relative to the broker by default.
     """
-    return f"{plain}?{urlencode({'owner': owner})}"
+    query = {"owner": owner} if app is None else {"owner": owner, "app": app}
+    return f"{plain}?{urlencode(query)}"

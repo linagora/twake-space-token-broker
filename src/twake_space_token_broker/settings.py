@@ -45,6 +45,16 @@ class Settings:
     The broker lets itself in only on an instance right under it, <name>.<domain>, since it calls
     the host LemonLDAP names.
     """
+    space_url: str | None = None
+    """Twake Space's API, under which the broker calls /spaces to check the API tokens the users
+    paste, such as Space's backend inside the cluster, or None for no Space step."""
+    space_web_url: str | None = None
+    """Where users open Twake Space, such as https://space.example.com: the Space step links to
+    its page of API tokens."""
+
+    def __post_init__(self) -> None:
+        if self.space_url is not None and self.space_web_url is None:
+            raise ValueError("SPACE_WEB_URL must be set with SPACE_URL")
 
     @property
     def redirect_uri(self) -> str:
@@ -69,7 +79,14 @@ class Settings:
                 environ, "DELEGATION_LIFETIME_SECONDS", DELEGATION_LIFETIME_SECONDS
             ),
             drive_instance_domain=_domain(environ.get("DRIVE_INSTANCE_DOMAIN", "")),
+            space_url=_url(environ.get("SPACE_URL", "")),
+            space_web_url=_url(environ.get("SPACE_WEB_URL", "")),
         )
+
+
+def _url(text: str) -> str | None:
+    """A base URL without its trailing slash, as the broker appends paths to it, or None."""
+    return text.strip().rstrip("/") or None
 
 
 def _seconds(environ: Mapping[str, str], variable: str, default: int) -> int:

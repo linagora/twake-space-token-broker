@@ -15,6 +15,7 @@ from twake_space_token_broker.keys import Cipher, Signer
 from twake_space_token_broker.lemonldap import LemonLDAP
 from twake_space_token_broker.revocations import Revocations
 from twake_space_token_broker.settings import Settings
+from twake_space_token_broker.space import TOKENS_PAGE, Space, SpaceTokens
 from twake_space_token_broker.tokens import AccessTokens
 
 
@@ -23,11 +24,15 @@ def create_app(
     *,
     lemonldap_transport: httpx.AsyncBaseTransport | None = None,
     cozy_stack_transport: httpx.AsyncBaseTransport | None = None,
+    space_transport: httpx.AsyncBaseTransport | None = None,
     clock: Callable[[], float] = time.time,
 ) -> FastAPI:
     pool = AsyncConnectionPool(settings.database_url, open=False)
     http = httpx.AsyncClient(transport=lemonldap_transport, timeout=10.0)
     instances_http = httpx.AsyncClient(transport=cozy_stack_transport, timeout=10.0)
+    space_http = httpx.AsyncClient(
+        base_url=settings.space_url or "", transport=space_transport, timeout=10.0
+    )
     delegations = Delegations(pool, Cipher(settings.encryption_key))
     lemonldap = LemonLDAP(settings, http, clock)
     access_tokens = AccessTokens(
@@ -42,10 +47,18 @@ def create_app(
     drive_tokens = DriveTokens(
         delegations, cozy_stack, clock, reuse_seconds=settings.token_reuse_seconds
     )
+    space_tokens = None
+    if settings.space_url is not None and settings.space_web_url is not None:
+        space_tokens = SpaceTokens(
+            delegations,
+            Space(space_http),
+            clock,
+            tokens_page=f"{settings.space_web_url}{TOKENS_PAGE}",
+        )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        async with pool, http, instances_http:
+        async with pool, http, instances_http, space_http:
             await delegations.create_schema()
             yield
 
@@ -61,11 +74,18 @@ def create_app(
 
     app.include_router(
         consent.router(
-            lemonldap, Signer(settings.encryption_key), access_tokens, drive_tokens, clock
+            lemonldap,
+            Signer(settings.encryption_key),
+            access_tokens,
+            drive_tokens,
+            clock,
+            space_tokens,
         )
     )
     app.include_router(
-        forward_auth.router(access_tokens, drive_tokens, lemonldap, settings.consent_url)
+        forward_auth.router(
+            access_tokens, drive_tokens, lemonldap, settings.consent_url, space_tokens
+        )
     )
     app.include_router(
         delegation.router(

@@ -120,3 +120,31 @@ def test_a_drive_instance_domain_that_is_no_domain_name_is_refused(
 
     with pytest.raises(ValueError, match="DRIVE_INSTANCE_DOMAIN"):
         create_app_from_env()
+
+
+def test_twake_space_is_off_by_default(environment: pytest.MonkeyPatch) -> None:
+    settings = Settings.from_env(os.environ)
+
+    assert (settings.space_url, settings.space_web_url) == (None, None)
+
+
+def test_the_environment_sets_where_the_broker_and_the_users_reach_twake_space(
+    environment: pytest.MonkeyPatch,
+) -> None:
+    environment.setenv("SPACE_URL", "http://twake-space-backend.twake-space.svc.cluster.local/")
+    environment.setenv("SPACE_WEB_URL", "https://space.dev.example.test/")
+
+    settings = Settings.from_env(os.environ)
+
+    assert settings.space_url == "http://twake-space-backend.twake-space.svc.cluster.local"
+    assert settings.space_web_url == "https://space.dev.example.test"
+
+
+def test_twake_space_without_where_its_users_open_it_is_refused(
+    environment: pytest.MonkeyPatch,
+) -> None:
+    """The Space step would have no page of API tokens to link to."""
+    environment.setenv("SPACE_URL", "http://twake-space-backend.twake-space.svc.cluster.local")
+
+    with pytest.raises(ValueError, match="SPACE_WEB_URL"):
+        create_app_from_env()

@@ -12,6 +12,7 @@ from testcontainers.community.postgres import PostgresContainer
 
 from tests.fake_cozy_stack import FakeCozyStack
 from tests.fake_lemonldap import FakeLemonLDAP
+from tests.fake_space import FakeSpace
 from twake_space_token_broker.app import create_app
 from twake_space_token_broker.settings import Settings
 
@@ -26,6 +27,12 @@ DRIVE_INSTANCE_DOMAIN = "twake.example.test"
 """The domain of the users' Drive instances."""
 MMAUDET_DRIVE = f"mmaudet.{DRIVE_INSTANCE_DOMAIN}"
 """The host of MMAUDET's Drive instance."""
+
+SPACE_API = "space-api.example.test"
+"""The host of Twake Space's API, which the broker reaches inside the cluster."""
+SPACE_URL = f"http://{SPACE_API}"
+SPACE_WEB_URL = "https://space.example.test"
+"""Where users open Twake Space."""
 
 
 class FakeClock:
@@ -93,6 +100,11 @@ def cozy_stack() -> FakeCozyStack:
 
 
 @pytest.fixture
+def space() -> FakeSpace:
+    return FakeSpace(SPACE_API)
+
+
+@pytest.fixture
 def drive(lemonldap: FakeLemonLDAP, cozy_stack: FakeCozyStack) -> str:
     """MMAUDET's Drive instance, which LemonLDAP names in workplaceFqdn."""
     cozy_stack.create_instance(MMAUDET_DRIVE)
@@ -106,12 +118,14 @@ async def running(
     lemonldap: FakeLemonLDAP,
     clock: FakeClock,
     cozy_stack: FakeCozyStack | None = None,
+    space: FakeSpace | None = None,
 ) -> AsyncIterator[AsyncClient]:
     """The broker, from its start to its stop."""
     app = create_app(
         settings,
         lemonldap_transport=lemonldap.transport,
         cozy_stack_transport=(cozy_stack or FakeCozyStack()).transport,
+        space_transport=(space or FakeSpace(SPACE_API)).transport,
         clock=clock,
     )
     async with (
@@ -123,9 +137,13 @@ async def running(
 
 @pytest.fixture
 async def client(
-    settings: Settings, lemonldap: FakeLemonLDAP, clock: FakeClock, cozy_stack: FakeCozyStack
+    settings: Settings,
+    lemonldap: FakeLemonLDAP,
+    clock: FakeClock,
+    cozy_stack: FakeCozyStack,
+    space: FakeSpace,
 ) -> AsyncIterator[AsyncClient]:
-    async with running(settings, lemonldap, clock, cozy_stack) as client:
+    async with running(settings, lemonldap, clock, cozy_stack, space) as client:
         yield client
 
 

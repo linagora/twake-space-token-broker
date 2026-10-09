@@ -6,6 +6,8 @@ A personal agent never holds a credential. Its owner consents once, through thei
 
 Twake Drive accepts only tokens of the owner's own instance, a cozy-stack. The same consent also lets the broker in on that instance, and the routes of Drive contracts get a token of it as well.
 
+Twake Space takes the API tokens its users create. The consent ends on a step where the owner pastes one, and the routes of Space contracts get it as well.
+
 ## Consent
 
 | Request | Answer |
@@ -13,6 +15,7 @@ Twake Drive accepts only tokens of the owner's own instance, a cozy-stack. The s
 | `GET /consent?owner=<email>` | the consent link bound to its owner, as the problems below give it: a redirect to LemonLDAP |
 | `GET /consent` | the plain consent link, the same for every user: a redirect to LemonLDAP |
 | `GET /callback` | where LemonLDAP, then the user's Drive instance, send the user back: a short page in French |
+| `POST /consent/space` | where the Space step posts the token the user pasted, or skips it: a short page in French |
 
 - The consent signs the user in with the `twake-space-agents` client: an authorization code with PKCE (S256) and the scope `openid email offline_access`. The state and the PKCE verifier wait in a signed, HttpOnly cookie. The consent lasts 10 minutes, but the browser keeps the cookie an hour, so that an expired consent still starts over from the owner's link.
 - A browser holds one consent at a time: opening a consent link again while one is in progress replaces it, and the first one then ends on a page saying it no longer matches the consent in progress.
@@ -33,6 +36,17 @@ Twake Drive accepts only tokens of the owner's own instance, a cozy-stack. The s
 - When the user declines on their instance, or the instance fails, the page says that the agent may act for them except in Drive, and why, with the link to start over. LemonLDAP's part of the consent stays.
 - Consenting again replaces the Drive delegation as well: the broker removes its earlier client from the instance, which voids that client's tokens, and Drive comes back only if the user lets the broker in again.
 
+### Space
+
+- With `SPACE_URL` set, every consent LemonLDAP granted ends on the Space step, after Drive when LemonLDAP names an instance. The page says whether the agent may act in Drive, and bears the status of the Drive step. It then links to Space's page of API tokens, `<SPACE_WEB_URL>/settings/api-tokens`, and names the token to create there in that page's words: « Assistant », Espaces « Écriture », Fil d'activité « Lecture », Membres « Écriture », Jetons d'API « Aucun accès », « Tous mes espaces, y compris ceux que je rejoindrai », and « 90 jours ».
+- The user pastes the token in the page's form, or skips the step. The form posts to `/consent/space`, bound to the consent in progress by its signed cookie and a state of its own, within the consent's 10 minutes.
+- The broker keeps a token only if it starts with `tws_` and Space answers `GET /spaces` with it. It then asks Space which scopes the token holds, without changing anything: Space checks a route's scope before anything else, answering 403 `insufficient_scope` without it, and past that check answers 400 or 404 on a space that does not exist. The probes are `GET /spaces/<uuid>/feed` for `feed:read`, then `POST /spaces/<uuid>/members` and `PATCH /spaces/<uuid>`, both with `{}`, for `members:write` and `space:write`, on a random UUID.
+- A token without `space:read` or `feed:read` is not kept: the page says so, with the scopes the token holds and those it lacks in Space's words, and the user may paste another. A token without `members:write` or `space:write` is kept, and the page says what the agent cannot do with it.
+- A token Space does not know, mistyped, revoked or expired, is not kept either (400), nor one Space cannot check (502, and a warning in the logs).
+- Skipping the step leaves the agent without Twake Space, unless it keeps a token pasted at an earlier consent: a new consent keeps the Space token, and a token pasted again replaces it.
+- No Space token is ever logged, nor shown in a page, nor put in the cookie.
+- Without `SPACE_URL`, the consent has no Space step and the broker serves no `/consent/space`.
+
 ## Forward-auth
 
 `GET /forward-auth` is for APISIX's `forward-auth` plugin only.
@@ -41,6 +55,7 @@ Twake Drive accepts only tokens of the owner's own instance, a cozy-stack. The s
 - On success, the broker answers 200 with `Authorization: Bearer <access token>`. List `Authorization` in the plugin's `upstream_headers`.
 - A Drive route appends `?token=drive` to the plugin's URI. The broker then answers 200 with three headers: `Authorization` as above, which names the user to the contract, `X-Twake-Drive-Token`, an access token of the owner's Drive instance with no scheme, and `X-Twake-Drive-Instance`, the instance's host. List the three in the plugin's `upstream_headers`: a 200 of a Drive route always sets them, so they replace any value the agent sent. Without the query, nothing changes.
 - When the owner has no Drive delegation, a Drive route asks LemonLDAP's userinfo for their instance. If LemonLDAP names one under `DRIVE_INSTANCE_DOMAIN`, the answer is `delegation_missing` with the consent link, since a new consent lets the broker in. If not, it is `drive_instance_unknown`, without the link, which would only take the owner round in circles.
+- A Space route appends `?token=space`. The broker then answers 200 with two headers: `Authorization` as above, and `X-Twake-Space-Token`, the API token the owner pasted, `tws_…`, with no scheme. List both in the plugin's `upstream_headers`. A Space route asks LemonLDAP first, so a delegation that is missing, expired or revoked gives no Space token either. When the owner has given their agent no Space token, the answer is `space_token_missing`. The broker reads the Space token from its database at each call. Without `SPACE_URL`, `?token=space` is `unknown_token`.
 - Access tokens are kept in memory and handed out for `TOKEN_REUSE_SECONDS` at most (60 seconds by default) from when the broker asked LemonLDAP for them, and never later than five minutes before they expire, then refreshed. They last 10 hours by LemonLDAP's default (`oidcServiceAccessTokenExpiration`) and 15 minutes for `twake-space-agents` on dev (`oidcRPMetaDataOptionsAccessTokenExpiration`), but only a refresh shows that LemonLDAP no longer honours a delegation.
 - Each refresh makes LemonLDAP look the user up and issue a new access token, so an agent in use costs a refresh a minute by default. An outage of LemonLDAP's LDAP directory or session store longer than `TOKEN_REUSE_SECONDS` shows to agents as `delegation_expired`, where the cached token used to hide it.
 - Simultaneous calls of one agent share one refresh.
@@ -53,14 +68,15 @@ Every error is an [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem (`a
 | Status | `code` | When |
 |---|---|---|
 | 400 | `missing_user_email` | the `X-Twake-User-Email` header is missing or empty |
-| 400 | `unknown_token` | the `token` query asks for another token than `drive` |
+| 400 | `unknown_token` | the `token` query asks for another token than `drive`, or `space` when `SPACE_URL` is set |
 | 401 | `delegation_missing` | the owner never consented or revoked their delegation, or, on a Drive route, never let the broker in on the Drive instance LemonLDAP names |
 | 401 | `delegation_expired` | LemonLDAP refuses the refresh token with `invalid_request` or `invalid_grant`, such as when the user was deleted, or their offline session expired (after 30 days by default) or was revoked; or, on a Drive route, the instance refuses its refresh token, such as once the owner removed the broker from it |
+| 401 | `space_token_missing` | on a Space route, the owner has given their agent no Space token, or the one kept no longer decrypts |
 | 404 | `drive_instance_unknown` | on a Drive route, the owner has no Drive delegation, and LemonLDAP names no instance under `DRIVE_INSTANCE_DOMAIN`, or that setting is unset |
 | 502 | `lemonldap_unavailable` | LemonLDAP gave no usable answer, or answered another error |
 | 502 | `drive_unavailable` | on a Drive route, the owner's Drive instance gave no usable answer |
 
-- Both 401 problems carry the consent link bound to the owner in `consent_url`, for the agent to send to them.
+- The 401 problems carry the consent link bound to the owner in `consent_url`, for the agent to send to them. That of `space_token_missing` also names the app, `app=space`.
 - APISIX passes an error's status and body on to the agent. List `Content-Type` in the plugin's `client_headers` to keep `application/problem+json`.
 - Routing errors, such as an unknown path, use the same format, with a `code` named after their HTTP status (`not_found`, `method_not_allowed`).
 
@@ -87,7 +103,7 @@ Every error is an [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem (`a
 
 ## Storage
 
-The broker creates its tables, `delegations` and `drive_delegations`, at startup if they are missing. A row of `delegations` holds:
+The broker creates its tables, `delegations`, `drive_delegations` and `space_tokens`, at startup if they are missing. A row of `delegations` holds:
 
 - the user's email;
 - the refresh token, encrypted with AES-GCM and bound to that email, or none once the user revoked their delegation;
@@ -98,7 +114,9 @@ A revoked delegation stays, without its refresh token, only until the broker has
 
 A row of `drive_delegations` holds the user's email, which refers to their row of `delegations`; the host of their Drive instance, the broker's client on it and the instance's refresh token, encrypted together the same way; and the time of its last change. Deleting a user's delegation deletes their Drive delegation with it.
 
-The key of the tokens and the key of the consent cookie are both derived from `ENCRYPTION_KEY` with HKDF. A token that no longer decrypts, after a change of that key, counts as expired, so the next consent replaces it.
+A row of `space_tokens` holds the user's email, which refers to their row of `delegations`; the Space token they pasted, encrypted the same way; the scopes the broker saw it hold; when they pasted it; and the time of its last change. A new consent keeps it, but deleting the user's delegation deletes it with it.
+
+The key of the tokens and the key of the consent cookie are both derived from `ENCRYPTION_KEY` with HKDF. A token that no longer decrypts, after a change of that key, counts as expired, so the next consent replaces it. A Space token that no longer decrypts counts as missing, so the next one pasted replaces it.
 
 ## Run
 
@@ -113,6 +131,8 @@ The key of the tokens and the key of the consent cookie are both derived from `E
 | `TOKEN_REUSE_SECONDS` | seconds an access token is handed out before LemonLDAP, or the Drive instance, is asked again, `60` by default: a revoked delegation still gets tokens for that long at most |
 | `DELEGATION_LIFETIME_SECONDS` | seconds a delegation lasts from its consent, `2592000` (30 days) by default: the offline session lifetime of the LemonLDAP client, or LemonLDAP's default when the client sets none |
 | `DRIVE_INSTANCE_DOMAIN` | the domain of the users' Drive instances, such as `dev.twake.lin-saas.com`: the broker lets itself in only on `<name>.<domain>`. Unset by default, which turns Drive off |
+| `SPACE_URL` | Twake Space's API, under which the broker calls `/spaces` to check the tokens users paste, such as Space's backend inside the cluster. Unset by default, which turns the Space step and `?token=space` off |
+| `SPACE_WEB_URL` | where users open Twake Space, such as `https://space.dev.twake.lin-saas.com`: the Space step links to its page of API tokens. Required with `SPACE_URL` |
 
 ```sh
 DATABASE_URL=postgresql://broker:secret@localhost:5432/broker \
@@ -127,13 +147,14 @@ The image `ghcr.io/linagora/twake-space-token-broker` listens on 8080 as user 10
 To deploy it:
 
 - register `<PUBLIC_BASE_URL>/callback` as a redirect of the LemonLDAP client;
-- publish only `/consent` and `/callback` on the public host, and let only APISIX reach `/forward-auth` and `/delegation`;
+- publish only `/consent`, `/callback` and `/consent/space` on the public host, and let only APISIX reach `/forward-auth` and `/delegation`;
 - for Drive, set `DRIVE_INSTANCE_DOMAIN`, have LemonLDAP release `workplaceFqdn` in the client's userinfo, and let the broker reach the users' Drive instances over HTTPS;
+- for Twake Space, set `SPACE_URL` and `SPACE_WEB_URL`, and let the broker reach Space's API;
 - run a single replica, since the access tokens and the refresh lock are kept in memory.
 
 ## Test
 
-The tests call the HTTP API against a real PostgreSQL that they start with Docker, a fake LemonLDAP and a fake cozy-stack.
+The tests call the HTTP API against a real PostgreSQL that they start with Docker, a fake LemonLDAP, a fake cozy-stack and a fake Twake Space API.
 
 ```sh
 uv run pytest
