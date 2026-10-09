@@ -29,7 +29,7 @@ from tests.conftest import (
 )
 from tests.fake_cozy_stack import FakeCozyStack
 from tests.fake_lemonldap import FakeLemonLDAP
-from tests.fake_space import FakeSpace, Outage
+from tests.fake_space import FakeSpace, Outage, Role
 from twake_space_token_broker.consent import COOKIE
 from twake_space_token_broker.keys import Signer
 from twake_space_token_broker.settings import Settings
@@ -55,6 +55,15 @@ PASTED = "Dans vos espaces Twake Space, il agit avec le jeton que vous avez coll
 NOT_KEPT = "Ce jeton n'a pas été enregistré :"
 NOT_A_TOKEN = f"{NOT_KEPT} ce n'est pas un jeton d'API de Twake Space, qui commence par tws_."
 NOT_IN_PROGRESS = "Cette page ne correspond pas à l'autorisation en cours."
+TOO_BROAD = (
+    f"{NOT_KEPT} il permet « Gérer les jetons » : s'il fuyait, il servirait à en créer d'autres."
+    " Créez-en un autre, avec Jetons d'API « Aucun accès »."
+)
+NOT_THEIRS = (
+    f"{NOT_KEPT} c'est un jeton d'organisation ou celui d'un autre compte : dans au moins un des"
+    " espaces qu'il atteint, il n'agit pas en votre nom. Créez le vôtre dans Twake Space, connecté"
+    f" en tant que {MMAUDET}."
+)
 
 
 @pytest.fixture
@@ -72,6 +81,16 @@ def bearer(authorization: str) -> str:
 def text_of(page: Response) -> str:
     """The page as the browser shows it."""
     return html.unescape(page.text)
+
+
+def consent_warning(caplog: pytest.LogCaptureFixture) -> str:
+    """The one warning the consent logged."""
+    [warning] = [
+        message
+        for name, level, message in caplog.record_tuples
+        if name == "twake_space_token_broker.consent" and level == logging.WARNING
+    ]
+    return warning
 
 
 def state_of(step: Response) -> str:
@@ -215,7 +234,7 @@ async def test_an_owner_who_skipped_the_space_step_gets_the_consent_link_for_spa
             " espaces ». Il ne permet pas : « Lire les fils ».",
         ),
         (
-            ("tokens:write",),
+            ("notifications:write",),
             "Ce jeton ne permet pas : « Lire les espaces », « Lire les fils », « Gérer les"
             " membres », « Modifier les espaces ».",
         ),
@@ -237,6 +256,138 @@ async def test_a_space_token_without_a_scope_the_agent_needs_is_not_kept(
     assert (
         f"{NOT_KEPT} il faut au moins « Lire les espaces » et « Lire les fils ». {holds}"
     ) in text_of(refused)
+    assert (await space_route(client, MMAUDET)).json() == SPACE_TOKEN_MISSING
+
+
+@pytest.mark.parametrize(
+    "create",
+    [
+        lambda space: space.create_token(*EVERY_SCOPE, "tokens:write", account=MMAUDET),
+        lambda space: space.create_organization_token(*EVERY_SCOPE, "tokens:write", role="admin"),
+    ],
+    ids=["of the owner", "of the organization"],
+)
+async def test_a_space_token_that_can_manage_tokens_is_not_kept(
+    client: AsyncClient,
+    lemonldap: FakeLemonLDAP,
+    space: FakeSpace,
+    create: Callable[[FakeSpace], str],
+) -> None:
+    """Were it to leak, it would create others."""
+    step = await consent(client, lemonldap, MMAUDET)
+
+    refused = await paste(client, step, create(space))
+
+    assert refused.status_code == 400
+    assert TOO_BROAD in text_of(refused)
+    assert (await space_route(client, MMAUDET)).json() == SPACE_TOKEN_MISSING
+
+
+@pytest.mark.parametrize(
+    ("spaces", "create"),
+    [
+        ([{ALICE: "admin"}], lambda space: space.create_token(*EVERY_SCOPE, account=ALICE)),
+        (
+            [{ALICE: "admin", MMAUDET: "viewer"}],
+            lambda space: space.create_token(*EVERY_SCOPE, account=ALICE),
+        ),
+        (
+            [{ALICE: "editor", MMAUDET: "editor"}, {ALICE: "editor"}],
+            lambda space: space.create_token(*EVERY_SCOPE, account=ALICE),
+        ),
+        (
+            [{ALICE: "editor"}],
+            lambda space: space.create_organization_token(*EVERY_SCOPE, role="editor"),
+        ),
+        (
+            [{MMAUDET: "admin"}],
+            lambda space: space.create_organization_token(*EVERY_SCOPE, role="viewer"),
+        ),
+    ],
+    ids=[
+        "of another account, in a space without the owner",
+        "of another account, in a space where the owner has another role",
+        "of another account, in one of its spaces without the owner",
+        "of the organization, in a space without the owner",
+        "of the organization, with another role than the owner's",
+    ],
+)
+async def test_a_space_token_that_does_not_act_for_the_owner_in_every_space_is_not_kept(
+    client: AsyncClient,
+    lemonldap: FakeLemonLDAP,
+    space: FakeSpace,
+    spaces: list[dict[str, Role]],
+    create: Callable[[FakeSpace], str],
+) -> None:
+    for members in spaces:
+        space.create_space(members)
+    step = await consent(client, lemonldap, MMAUDET)
+
+    refused = await paste(client, step, create(space))
+
+    assert refused.status_code == 400
+    assert NOT_THEIRS in text_of(refused)
+    assert (await space_route(client, MMAUDET)).json() == SPACE_TOKEN_MISSING
+
+
+async def test_a_space_token_of_the_owner_is_kept_whatever_their_role_in_each_space(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, space: FakeSpace
+) -> None:
+    space.create_space({MMAUDET: "admin", ALICE: "viewer"})
+    space.create_space({ALICE: "admin", MMAUDET: "viewer"})
+    space.create_space({ALICE: "admin"})
+    token = space.create_token(*EVERY_SCOPE, account=MMAUDET)
+    step = await consent(client, lemonldap, MMAUDET)
+
+    pasted = await paste(client, step, token)
+
+    assert pasted.status_code == 200
+    assert (await space_route(client, MMAUDET)).headers["x-twake-space-token"] == token
+
+
+async def test_twake_space_knows_the_owner_by_their_email_whatever_its_case(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, space: FakeSpace
+) -> None:
+    space.create_space({"MMaudet@Example.TEST": "editor"})
+    token = space.create_token(*EVERY_SCOPE, account="MMaudet@Example.TEST")
+    step = await consent(client, lemonldap, MMAUDET)
+
+    pasted = await paste(client, step, token)
+
+    assert pasted.status_code == 200
+    assert (await space_route(client, MMAUDET)).headers["x-twake-space-token"] == token
+
+
+async def test_a_space_token_that_reaches_no_space_is_kept_as_nothing_tells_whose_it_is(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, space: FakeSpace
+) -> None:
+    space.create_space({MMAUDET: "admin"})
+    token = space.create_token(*EVERY_SCOPE, account=ALICE)
+    step = await consent(client, lemonldap, MMAUDET)
+
+    pasted = await paste(client, step, token)
+
+    assert pasted.status_code == 200
+    assert (await space_route(client, MMAUDET)).headers["x-twake-space-token"] == token
+
+
+async def test_a_space_token_is_not_kept_when_twake_space_fails_to_show_a_space_it_reaches(
+    client: AsyncClient,
+    lemonldap: FakeLemonLDAP,
+    space: FakeSpace,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    space.create_space({MMAUDET: "admin"})
+    space.failing_spaces.add(space.create_space({MMAUDET: "editor"}))
+    step = await consent(client, lemonldap, MMAUDET)
+
+    refused = await paste(client, step, space.create_token(*EVERY_SCOPE, account=MMAUDET))
+
+    assert refused.status_code == 502
+    assert (f"{NOT_KEPT} Twake Space n'a pas pu le vérifier. Réessayez dans un moment.") in text_of(
+        refused
+    )
+    assert consent_warning(caplog).startswith(f"Twake Space checked no token of {MMAUDET}: ")
     assert (await space_route(client, MMAUDET)).json() == SPACE_TOKEN_MISSING
 
 
@@ -291,12 +442,7 @@ async def test_a_space_token_twake_space_cannot_check_is_not_kept(
     assert (f"{NOT_KEPT} Twake Space n'a pas pu le vérifier. Réessayez dans un moment.") in text_of(
         refused
     )
-    [warning] = [
-        message
-        for name, level, message in caplog.record_tuples
-        if name == "twake_space_token_broker.consent" and level == logging.WARNING
-    ]
-    assert warning.startswith(f"Twake Space checked no token of {MMAUDET}: ")
+    assert consent_warning(caplog).startswith(f"Twake Space checked no token of {MMAUDET}: ")
     space.outage = None
     assert (await space_route(client, MMAUDET)).json() == SPACE_TOKEN_MISSING
 

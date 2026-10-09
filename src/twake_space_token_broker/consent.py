@@ -31,11 +31,13 @@ from twake_space_token_broker.lemonldap import (
 from twake_space_token_broker.space import (
     SCOPES,
     NotASpaceToken,
+    NotTheirs,
     ScopesMissing,
     SpaceRefused,
     SpaceTokenMissing,
     SpaceTokens,
     SpaceUnavailable,
+    TooBroad,
 )
 from twake_space_token_broker.tokens import AccessTokens, DelegationMissing
 
@@ -529,11 +531,26 @@ def router(
                 " autre s'il a été révoqué ou s'il a expiré.",
                 status_code=400,
             )
+        except TooBroad:
+            return step_again(
+                flow,
+                f"{NOT_KEPT} il permet « Gérer les jetons » : s'il fuyait, il servirait à en créer"
+                " d'autres. Créez-en un autre, avec Jetons d'API « Aucun accès ».",
+                status_code=400,
+            )
         except ScopesMissing as missing:
             return step_again(
                 flow,
                 f"{NOT_KEPT} il faut au moins « Lire les espaces » et « Lire les fils »."
                 f" {_allows(missing.held)}",
+                status_code=400,
+            )
+        except NotTheirs:
+            return step_again(
+                flow,
+                f"{NOT_KEPT} c'est un jeton d'organisation ou celui d'un autre compte : dans au"
+                " moins un des espaces qu'il atteint, il n'agit pas en votre nom. Créez le vôtre"
+                f" dans Twake Space, connecté en tant que {user}.",
                 status_code=400,
             )
         except SpaceUnavailable as unavailable:

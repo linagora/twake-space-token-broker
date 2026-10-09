@@ -31,6 +31,9 @@ SCOPES = {
 REQUIRED = frozenset({"space:read", "feed:read"})
 """The scopes the agent cannot do without: it reads the spaces, then their feeds."""
 
+MANAGES_TOKENS = "tokens:write"
+"""The scope that lets a token create other tokens, which no token the broker keeps may hold."""
+
 
 class NotASpaceToken(Exception):
     """What the user pasted is no API token of Space."""
@@ -44,12 +47,21 @@ class SpaceUnavailable(Exception):
     """Space gave no answer the broker understands."""
 
 
+class TooBroad(Exception):
+    """The token may manage API tokens: were it to leak, it would create others."""
+
+
 class ScopesMissing(Exception):
     """The token lacks a scope the agent cannot do without."""
 
     def __init__(self, held: frozenset[str]) -> None:
         super().__init__(f"The token holds {sorted(held)} only")
         self.held = held
+
+
+class NotTheirs(Exception):
+    """The token does not act for the user in every space it reaches: it is an organization
+    token, or another account's."""
 
 
 class SpaceTokenMissing(Exception):
@@ -66,17 +78,20 @@ def _error(response: httpx.Response) -> object:
 
 
 class Space:
-    """Twake Space's API, which the broker asks what a user's API token allows."""
+    """Twake Space's API, which the broker asks what a user's API token allows, and whom it acts
+    for."""
 
     def __init__(self, http: httpx.AsyncClient) -> None:
         self._http = http
 
     async def scopes_of(self, token: str) -> frozenset[str]:
-        """The scopes among SCOPES that the token holds, asked without changing anything.
+        """The scopes among SCOPES and MANAGES_TOKENS that the token holds, asked without changing
+        anything.
 
         A route of Space checks its scope before anything else, and answers 403 insufficient_scope
         without it. Past that check, each probe stops on a space that does not exist, at the space
-        or at a body that names nothing to change: a 404 or a 400.
+        or at a body that names nothing to change: a 404 or a 400. The list of tokens answers an
+        account's token, and refuses an organization token with 403 forbidden.
 
         Raises SpaceRefused when Space does not know the token, and SpaceUnavailable when it gives
         no answer the broker understands.
@@ -87,6 +102,7 @@ class Space:
             ("feed:read", "GET", f"/spaces/{nowhere}/feed", None),
             ("members:write", "POST", f"/spaces/{nowhere}/members", {}),
             ("space:write", "PATCH", f"/spaces/{nowhere}", {}),
+            (MANAGES_TOKENS, "GET", "/tokens", None),
         )
         held = set()
         for scope, method, path, body in probes:
@@ -94,10 +110,64 @@ class Space:
                 held.add(scope)
         return frozenset(held)
 
+    async def acts_for(self, token: str, user: str) -> bool:
+        """Whether the token acts for the user in every space it reaches: whether they are a member
+        of each, under their email whatever its case, with the role Space gives the token there.
+
+        Space names no one a token acts for. A token of the user's account acts in their spaces,
+        with their role in each. An organization token acts in every space of the organization
+        with a role of its own, and another account's token in that account's spaces with that
+        account's role: either fails in a space where the user is not a member with that role. A
+        token that reaches no space passes, as nothing tells whose it is then.
+
+        Raises SpaceRefused and SpaceUnavailable as scopes_of does.
+        """
+        listed = await self._read(token, "/spaces")
+        try:
+            reached = [(uuid.UUID(space["id"]), space["role"]) for space in listed.json()["spaces"]]
+        except (AttributeError, KeyError, TypeError, ValueError) as error:
+            raise SpaceUnavailable("GET /spaces answered no list of spaces") from error
+        for space, role in reached:
+            shown = await self._read(token, f"/spaces/{space}")
+            try:
+                members = [
+                    (member["email"].casefold(), member["role"])
+                    for member in shown.json()["members"]
+                ]
+            except (AttributeError, KeyError, TypeError, ValueError) as error:
+                raise SpaceUnavailable(f"GET /spaces/{space} answered no members") from error
+            if (user.casefold(), role) not in members:
+                return False
+        return True
+
     async def _holds(self, token: str, method: str, path: str, body: object) -> bool:
         """Whether Space let the request past its check of the route's scope."""
+        response = await self._request(token, method, path, body)
+        if response.status_code == 401:
+            raise SpaceRefused()
+        error = _error(response)
+        if response.status_code == 403 and error == "insufficient_scope":
+            return False
+        if response.status_code in (200, 400, 404) or (
+            response.status_code == 403 and error == "forbidden"
+        ):
+            return True
+        raise SpaceUnavailable(f"{method} {path} answered {response.status_code}")
+
+    async def _read(self, token: str, path: str) -> httpx.Response:
+        """Space's answer to a GET with the token, which it must let through."""
+        response = await self._request(token, "GET", path)
+        if response.status_code == 401:
+            raise SpaceRefused()
+        if response.status_code != 200:
+            raise SpaceUnavailable(f"GET {path} answered {response.status_code}")
+        return response
+
+    async def _request(
+        self, token: str, method: str, path: str, body: object = None
+    ) -> httpx.Response:
         try:
-            response = await self._http.request(
+            return await self._http.request(
                 method,
                 path,
                 headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
@@ -105,13 +175,6 @@ class Space:
             )
         except httpx.HTTPError as error:
             raise SpaceUnavailable(f"{method} {path}: {error!r}") from error
-        if response.status_code == 401:
-            raise SpaceRefused()
-        if response.status_code == 403 and _error(response) == "insufficient_scope":
-            return False
-        if response.status_code in (200, 400, 404):
-            return True
-        raise SpaceUnavailable(f"{method} {path} answered {response.status_code}")
 
 
 class SpaceTokens:
@@ -135,16 +198,20 @@ class SpaceTokens:
         """Checks with Space the token the user pasted, then keeps it for their agent, in place of
         any earlier one: the scopes it holds among SCOPES.
 
-        Raises NotASpaceToken, SpaceRefused or ScopesMissing when the token will not do,
-        SpaceUnavailable when Space cannot tell, and DelegationMissing when the user's delegation
-        went meanwhile: nothing is kept then.
+        Raises NotASpaceToken, SpaceRefused, TooBroad, ScopesMissing or NotTheirs when the token
+        will not do, SpaceUnavailable when Space cannot tell, and DelegationMissing when the user's
+        delegation went meanwhile: nothing is kept then.
         """
         token = pasted.strip()
         if not TOKEN.fullmatch(token):
             raise NotASpaceToken()
         held = await self._space.scopes_of(token)
+        if MANAGES_TOKENS in held:
+            raise TooBroad()
         if not held >= REQUIRED:
             raise ScopesMissing(held)
+        if not await self._space.acts_for(token, user):
+            raise NotTheirs()
         pasted_at = datetime.fromtimestamp(self._clock(), UTC)
         if not await self._delegations.save_space_token(
             user, token, scopes=sorted(held), pasted_at=pasted_at
