@@ -8,6 +8,7 @@ to its owner checks that the account that signed in is theirs.
 import logging
 import secrets
 from collections.abc import Callable
+from enum import StrEnum
 from html import escape
 from typing import Annotated, Any
 
@@ -44,6 +45,28 @@ DRIVE_STEP = "drive"
 """The step of a consent in progress whose user is on their Drive instance."""
 
 UNAVAILABLE = "Votre instance Drive n'a pas pu terminer l'autorisation."
+
+
+class DriveOutcome(StrEnum):
+    """How the Drive step of a consent ended."""
+
+    GRANTED = "granted"
+    ABSENT = "absent"
+    """LemonLDAP names no Drive instance of the user."""
+    DECLINED = "declined"
+    """The user declined on their instance."""
+    REFUSED = "refused"
+    """The user's instance refused the code it gave."""
+    UNAVAILABLE = "unavailable"
+    """The user's instance did not answer."""
+
+
+WITHOUT_DRIVE = {
+    DriveOutcome.DECLINED: ("Vous n'avez pas accordé l'accès à vos fichiers.", 200),
+    DriveOutcome.REFUSED: ("Votre instance Drive a refusé le code d'autorisation.", 400),
+    DriveOutcome.UNAVAILABLE: (UNAVAILABLE, 502),
+}
+"""Why a consent ends without Drive, and the status of its page."""
 
 
 def _page(
@@ -234,10 +257,7 @@ def router(
             )
             instance = None
         if instance is None:
-            return _authorized(
-                f"Votre assistant Twake Space peut désormais agir pour {signed_in.user}."
-                " Drive n'est pas disponible pour votre compte."
-            )
+            return end(signed_in.user, owner, DriveOutcome.ABSENT)
         state = secrets.token_urlsafe(32)
         verifier = secrets.token_urlsafe(48)
         try:
@@ -248,9 +268,7 @@ def router(
             logger.warning(
                 "The Drive instance of %s took no client: %s", signed_in.user, unavailable
             )
-            return _without_drive(
-                signed_in.user, UNAVAILABLE, retry_url=_retry_url(owner), status_code=502
-            )
+            return end(signed_in.user, owner, DriveOutcome.UNAVAILABLE)
         response = RedirectResponse(authorize_url, status_code=302)
         remember(
             response,
@@ -267,16 +285,12 @@ def router(
     async def drive_callback(flow: dict[str, Any], code: str | None, state: str | None) -> Response:
         """Where the user's Drive instance sends them back."""
         user = flow["user"]
-        retry_url = _retry_url(flow.get("owner"))
+        owner = flow.get("owner")
         if code is None:
             # The instance's page links back with no state when the user declines: the answer
             # changes nothing the broker keeps
-            return _without_drive(
-                user,
-                "Vous n'avez pas accordé l'accès à vos fichiers.",
-                status_code=200,
-                retry_url=retry_url,
-            )
+            return end(user, owner, DriveOutcome.DECLINED)
+        retry_url = _retry_url(owner)
         if not _same_state(flow, state):
             return _refused(
                 "Cette page ne correspond pas à l'autorisation en cours.", retry_url=retry_url
@@ -286,17 +300,26 @@ def router(
         except DelegationMissing:
             return _refused("Cette autorisation n'est plus en cours.", retry_url=retry_url)
         except InstanceRefused:
-            return _without_drive(
-                user,
-                "Votre instance Drive a refusé le code d'autorisation.",
-                status_code=400,
-                retry_url=retry_url,
-            )
+            return end(user, owner, DriveOutcome.REFUSED)
         except InstanceUnavailable as unavailable:
             logger.warning("The Drive instance of %s completed no consent: %s", user, unavailable)
-            return _without_drive(user, UNAVAILABLE, status_code=502, retry_url=retry_url)
-        return _authorized(
-            f"Votre assistant Twake Space peut désormais agir pour {user}, y compris dans Drive."
-        )
+            return end(user, owner, DriveOutcome.UNAVAILABLE)
+        return end(user, owner, DriveOutcome.GRANTED)
+
+    def end(user: str, owner: str | None, drive: DriveOutcome) -> Response:
+        """Where every consent LemonLDAP granted ends, whether Drive was granted, absent or
+        failed."""
+        if drive is DriveOutcome.GRANTED:
+            return _authorized(
+                f"Votre assistant Twake Space peut désormais agir pour {user}, y compris dans"
+                " Drive."
+            )
+        if drive is DriveOutcome.ABSENT:
+            return _authorized(
+                f"Votre assistant Twake Space peut désormais agir pour {user}."
+                " Drive n'est pas disponible pour votre compte."
+            )
+        reason, status_code = WITHOUT_DRIVE[drive]
+        return _without_drive(user, reason, retry_url=_retry_url(owner), status_code=status_code)
 
     return routes
