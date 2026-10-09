@@ -4,11 +4,12 @@ import logging
 import re
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import httpx
 
-from twake_space_token_broker.delegations import Delegations
+from twake_space_token_broker.delegations import Delegations, SpaceToken
 from twake_space_token_broker.keys import Undecryptable
 from twake_space_token_broker.tokens import DelegationMissing
 
@@ -66,6 +67,15 @@ class NotTheirs(Exception):
 
 class SpaceTokenMissing(Exception):
     """The user has given their agent no Space token."""
+
+
+@dataclass(frozen=True)
+class KeptToken:
+    """What the consent shows of the Space token a user pasted: never the token itself."""
+
+    scopes: frozenset[str]
+    """The scopes among SCOPES that Space showed the token to hold."""
+    pasted_at: datetime
 
 
 def _error(response: httpx.Response) -> object:
@@ -200,7 +210,7 @@ class SpaceTokens:
 
         Raises NotASpaceToken, SpaceRefused, TooBroad, ScopesMissing or NotTheirs when the token
         will not do, SpaceUnavailable when Space cannot tell, and DelegationMissing when the user's
-        delegation went meanwhile: nothing is kept then.
+        delegation went meanwhile: nothing is kept then, and any earlier token stays.
         """
         token = pasted.strip()
         if not TOKEN.fullmatch(token):
@@ -219,13 +229,27 @@ class SpaceTokens:
             raise DelegationMissing()
         return held
 
+    async def kept(self, user: str) -> KeptToken | None:
+        """What the user's Space token allows and when they pasted it, if they gave their agent
+        one."""
+        pasted = await self._pasted(user)
+        return None if pasted is None else KeptToken(pasted.scopes, pasted.pasted_at)
+
+    async def remove(self, user: str) -> None:
+        """Forgets the Space token the user pasted: their agent no longer acts in Twake Space."""
+        await self._delegations.forget_space_token(user)
+
     async def of(self, user: str) -> str:
         """The Space token the user pasted, for their agent."""
-        try:
-            token = await self._delegations.space_token_of(user)
-        except Undecryptable as undecryptable:
-            logger.warning("The Space token of %s does not decrypt with ENCRYPTION_KEY", user)
-            raise SpaceTokenMissing() from undecryptable
-        if token is None:
+        pasted = await self._pasted(user)
+        if pasted is None:
             raise SpaceTokenMissing()
-        return token
+        return pasted.token
+
+    async def _pasted(self, user: str) -> SpaceToken | None:
+        """The Space token the user pasted, unless it no longer decrypts, which counts as none."""
+        try:
+            return await self._delegations.space_token_of(user)
+        except Undecryptable:
+            logger.warning("The Space token of %s does not decrypt with ENCRYPTION_KEY", user)
+            return None
