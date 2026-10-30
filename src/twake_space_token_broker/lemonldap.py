@@ -38,22 +38,35 @@ class OfflineAccessDenied(Exception):
     """LemonLDAP issued no refresh token, so the broker could never act for the user later."""
 
 
+class EmailWithheld(Exception):
+    """LemonLDAP named no email for the user, by which the broker keys their delegation.
+
+    It holds the subject of the ID token, to find the user in the logs.
+    """
+
+
 @dataclass(frozen=True)
 class SignedIn:
     user: str
-    """The user's email, which is the subject LemonLDAP names its users by on Twake."""
+    """The user's email, as LemonLDAP releases it under the email scope, whatever the subject its
+    client names users by."""
     refresh_token: str
     tokens: Tokens
 
 
-def _subject(id_token: str) -> str:
-    """The subject of an ID token straight from LemonLDAP's token endpoint.
+def _email(claims: dict[str, Any]) -> str | None:
+    email = claims.get("email")
+    return email if isinstance(email, str) and email else None
+
+
+def _id_token_claims(id_token: str) -> dict[str, Any]:
+    """The claims of an ID token straight from LemonLDAP's token endpoint.
 
     It comes over TLS from the issuer, in answer to the broker's own credentials, so the
     signature needs no check (OpenID Connect Core, 3.1.3.7).
     """
     claims: dict[str, Any] = json.loads(base64url.decode(id_token.split(".")[1]))
-    return str(claims["sub"])
+    return claims
 
 
 def _tokens(body: dict[str, Any], requested_at: float) -> Tokens:
@@ -113,17 +126,16 @@ class LemonLDAP:
         if tokens.refresh_token is None:
             raise OfflineAccessDenied()
         try:
-            user = _subject(body["id_token"])
+            claims = _id_token_claims(body["id_token"])
         except (KeyError, IndexError, ValueError) as error:
             raise LemonLDAPUnavailable("an answer without the user's identity") from error
+        # The ID token carries the email only when the client forces the claims into it
+        user = _email(claims) or _email(await self._userinfo(tokens.access_token))
+        if user is None:
+            raise EmailWithheld(claims.get("sub"))
         return SignedIn(user=user, refresh_token=tokens.refresh_token, tokens=tokens)
 
-    async def drive_instance(self, access_token: str) -> str | None:
-        """The host of the user's Drive instance, if LemonLDAP names in their userinfo one under
-        the domain of the users' instances."""
-        domain = self._settings.drive_instance_domain
-        if domain is None:
-            return None
+    async def _userinfo(self, access_token: str) -> dict[str, Any]:
         try:
             response = await self._http.get(
                 self._endpoint("userinfo"), headers={"Authorization": f"Bearer {access_token}"}
@@ -133,7 +145,15 @@ class LemonLDAP:
         body = json_object(response)
         if response.status_code != 200 or not body:
             raise LemonLDAPUnavailable(f"HTTP {response.status_code} {body.get('error', '')}")
-        host = body.get(DRIVE_INSTANCE_CLAIM)
+        return body
+
+    async def drive_instance(self, access_token: str) -> str | None:
+        """The host of the user's Drive instance, if LemonLDAP names in their userinfo one under
+        the domain of the users' instances."""
+        domain = self._settings.drive_instance_domain
+        if domain is None:
+            return None
+        host = (await self._userinfo(access_token)).get(DRIVE_INSTANCE_CLAIM)
         if host is None:
             return None
         # The broker calls the instance at this host: nothing but one of the users' instances,

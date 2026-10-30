@@ -20,7 +20,7 @@ Twake Space takes the API tokens its users create. The consent ends on a step wh
 
 - The consent signs the user in with the `twake-space-agents` client: an authorization code with PKCE (S256) and the scope `openid email offline_access`. The state and the PKCE verifier wait in a signed, HttpOnly cookie. The consent lasts 10 minutes, but the browser keeps the cookie an hour, so that an expired consent still starts over from the owner's link.
 - A browser holds one consent at a time: opening a consent link again while one is in progress replaces it, and the first one then ends on a page saying it no longer matches the consent in progress.
-- The callback checks the state, then exchanges the code with `client_secret_basic`. It stores the refresh token under the user's email, which is the `sub` of the ID token on Twake's LemonLDAP.
+- The callback checks the state, then exchanges the code with `client_secret_basic`. It stores the refresh token under the user's email: the `email` claim of the ID token, or of LemonLDAP's userinfo when the client does not force claims into the ID token. The `sub` may be the uid or the email, as the client's "sub" option sets it: the broker does not read it. Without an email, the consent stores nothing and fails with a 502, which the log blames on the client's claims.
 - The owner's link asks LemonLDAP for no new login and passes the owner as `login_hint`, so an owner already signed in consents in one go. The callback then checks that the account that signed in is the owner, exactly as the link names them, since delegations are keyed by that email. If it is not, it stores nothing, leaves that account's delegations as they were, and asks the user to open the link in a private window and sign in as the owner. That account keeps an offline session in LemonLDAP that nothing holds: LemonLDAP 2.21 cannot revoke it.
 - The plain link asks for `prompt=login`, so LemonLDAP has the user sign in again when an SSO session is open, through its unstyled "Upgrade session" page. LemonLDAP's "stay connected" defeats it: its login counts as a fresh one, so a browser that remembers another account can still consent for that account unnoticed. Give users their own link.
 - Consenting again replaces the stored token.
@@ -151,7 +151,7 @@ The image `ghcr.io/linagora/twake-space-token-broker` listens on 8080 as user 10
 
 To deploy it:
 
-- register `<PUBLIC_BASE_URL>/callback` as a redirect of the LemonLDAP client;
+- register `<PUBLIC_BASE_URL>/callback` as a redirect of the LemonLDAP client, and have it release `email`, the same address APISIX names the agent's owner by;
 - publish only `/consent`, `/callback` and `/consent/space` on the public host, and let only APISIX reach `/forward-auth` and `/delegation`;
 - for Drive, set `DRIVE_INSTANCE_DOMAIN`, have LemonLDAP release `workplaceFqdn` in the client's userinfo, and let the broker reach the users' Drive instances over HTTPS;
 - for Twake Space, set `SPACE_URL` and `SPACE_WEB_URL`, and let the broker reach Space's API;

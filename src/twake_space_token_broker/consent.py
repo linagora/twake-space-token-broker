@@ -25,6 +25,7 @@ from twake_space_token_broker.cozy_stack import InstanceRefused, InstanceUnavail
 from twake_space_token_broker.drive import DriveTokens
 from twake_space_token_broker.keys import Signer
 from twake_space_token_broker.lemonldap import (
+    EmailWithheld,
     GrantRefused,
     LemonLDAP,
     LemonLDAPUnavailable,
@@ -443,6 +444,13 @@ def router(
             logger.warning("LemonLDAP granted no offline access: check the client's options")
             return _refused(
                 "LemonLDAP n'a pas accordé d'accès hors ligne à l'assistant.",
+                retry_url=retry_url,
+                status_code=502,
+            )
+        except EmailWithheld as withheld:
+            logger.warning("LemonLDAP named no email for %s: check the client's claims", withheld)
+            return _refused(
+                "LemonLDAP n'a pas transmis l'adresse e-mail du compte.",
                 retry_url=retry_url,
                 status_code=502,
             )

@@ -63,6 +63,13 @@ class FakeLemonLDAP:
         """The host of each user's Drive instance, which userinfo releases as workplaceFqdn."""
         self.userinfo_outage = False
         """Whether userinfo alone answers an error page."""
+        self.subjects: dict[str, str] = {}
+        """The subject of each user named by another claim than their email, such as their uid,
+        as a client's "sub" option may set it."""
+        self.forces_id_token_claims = True
+        """Whether the ID token carries the claims of the scopes, besides userinfo."""
+        self.releases_email = True
+        """Whether the client releases the email claim at all."""
         self.transport = httpx.MockTransport(self._handle)
 
     def sign_in(self, authorize_url: str, user: str) -> str:
@@ -115,7 +122,7 @@ class FakeLemonLDAP:
         user = self._access_tokens.get(access_token) if scheme == "Bearer" else None
         if user is None:
             return _error(401, "invalid_token")
-        claims = {"sub": user, "email": user}
+        claims = self._claims(user)
         if user in self.workplaces:
             claims["workplaceFqdn"] = self.workplaces[user]
         return httpx.Response(200, json=claims)
@@ -188,10 +195,19 @@ class FakeLemonLDAP:
             "scope": "openid email",
         }
 
+    def _claims(self, user: str) -> dict[str, str]:
+        """The subject and the claims of the email scope, the user being their email."""
+        claims = {"sub": self.subjects.get(user, user)}
+        if self.releases_email:
+            claims["email"] = user
+        return claims
+
     def _id_token(self, user: str) -> str:
         """A JWT whose signature the broker has no need to check, as it comes from LemonLDAP."""
         header = {"alg": "RS256", "typ": "JWT"}
-        claims = {"iss": self._issuer, "aud": self._client_id, "sub": user}
+        claims = {"iss": self._issuer, "aud": self._client_id, **self._claims(user)}
+        if not self.forces_id_token_claims:
+            claims.pop("email", None)
         return ".".join(
             [_encode(json.dumps(header).encode()), _encode(json.dumps(claims).encode()), "c2ln"]
         )

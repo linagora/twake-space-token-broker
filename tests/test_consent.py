@@ -1,3 +1,4 @@
+import logging
 from dataclasses import replace
 from typing import Literal
 
@@ -157,6 +158,72 @@ async def test_a_consent_link_naming_anyone_is_bound_to_them(client: AsyncClient
     location = URL(response.headers["location"])
     assert "prompt" not in location.params
     assert location.params["login_hint"] == "mmaudet"
+
+
+@pytest.mark.parametrize("in_id_token", [True, False], ids=["ID token", "userinfo"])
+async def test_an_owner_whose_subject_is_their_uid_consents_through_their_link(
+    client: AsyncClient,
+    lemonldap: FakeLemonLDAP,
+    cozy_stack: FakeCozyStack,
+    drive: str,
+    in_id_token: bool,
+) -> None:
+    """A client whose "sub" option names users by their uid: the broker keys by their email."""
+    lemonldap.subjects[MMAUDET] = "mmaudet"
+    lemonldap.forces_id_token_claims = in_id_token
+    started = await client.get("/consent", params={"owner": MMAUDET})
+    to_drive = await client.get(lemonldap.sign_in(started.headers["location"], MMAUDET))
+
+    response = await client.get(cozy_stack.authorize(to_drive.headers["location"]))
+
+    assert response.status_code == 200
+    agent = await client.get(
+        "/forward-auth", params={"token": "drive"}, headers=as_agent_of(MMAUDET)
+    )
+    assert agent.status_code == 200
+
+
+async def test_a_plain_consent_whose_subject_is_a_uid_is_kept_under_the_users_email(
+    client: AsyncClient, lemonldap: FakeLemonLDAP
+) -> None:
+    lemonldap.subjects[MMAUDET] = "mmaudet"
+
+    await consent(client, lemonldap, MMAUDET)
+
+    agent = await client.get("/forward-auth", headers=as_agent_of(MMAUDET))
+    assert agent.status_code == 200
+
+
+async def test_a_consent_without_the_users_email_is_a_bad_gateway(
+    client: AsyncClient,
+    lemonldap: FakeLemonLDAP,
+    database_url: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    lemonldap.subjects[MMAUDET] = "mmaudet"
+    lemonldap.releases_email = False
+
+    response = await consent(client, lemonldap, MMAUDET)
+
+    assert_consent_failed(response, status_code=502)
+    assert await database_dump(database_url) == ""
+    assert (
+        "twake_space_token_broker.consent",
+        logging.WARNING,
+        "LemonLDAP named no email for mmaudet: check the client's claims",
+    ) in caplog.record_tuples
+
+
+async def test_a_consent_whose_email_only_userinfo_holds_fails_with_userinfo(
+    client: AsyncClient, lemonldap: FakeLemonLDAP, database_url: str
+) -> None:
+    lemonldap.forces_id_token_claims = False
+    lemonldap.userinfo_outage = True
+
+    response = await consent(client, lemonldap, MMAUDET)
+
+    assert_consent_failed(response, status_code=502)
+    assert await database_dump(database_url) == ""
 
 
 async def test_consent_stores_the_users_refresh_token_encrypted(
